@@ -37,17 +37,16 @@ const SHEET_B_CSV = "https://docs.google.com/spreadsheets/d/1SGbsAVFSBMZ0Gf1xgU6
 const SHEET_A_CSV = "https://docs.google.com/spreadsheets/d/1Oe53M2mNjJrEDUzwhyTx1oaKnMgv6XAGl6rFJfiQTxA/export?format=csv&gid=142494832";
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_KEY = "";
-const GEMINI_KEY = "SUA_CHAVE_GEMINI_AQUI";
-const GEMINI_MODELO = "gemini-3.5-flash";
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODELO + ":generateContent";
+// IA via proxy seguro (Cloudflare Worker). A chave Gemini fica protegida no Worker,
+// nunca no codigo. Substitua pela URL do seu Worker apos o deploy.
+const IA_PROXY_URL = "https://oriente-ia.exploredev.workers.dev";
 async function geminiCall(sys, msg, maxTok) {
-  if (!GEMINI_KEY || GEMINI_KEY === "SUA_CHAVE_GEMINI_AQUI") return null;
+  if (!IA_PROXY_URL || IA_PROXY_URL.includes("https://oriente-ia.exploredev.workers.dev")) return null;
   try {
-    const r = await fetch(GEMINI_URL, {
+    const r = await fetch(IA_PROXY_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_KEY
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
         contents: [{
@@ -66,17 +65,17 @@ async function geminiCall(sys, msg, maxTok) {
       const d = await r.json();
       const txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
       if (txt) return { ok: true, txt };
-      return { ok: false, motivo: "Resposta vazia do Gemini." };
+      return { ok: false, motivo: "Resposta vazia da IA." };
     }
     if (r.status === 429) {
-      return { ok: false, motivo: "Limite gratuito do Gemini atingido por agora (1500/dia)." };
+      return { ok: false, motivo: "Limite gratuito da IA atingido por agora (1500/dia)." };
     }
     if (r.status === 400 || r.status === 401 || r.status === 403) {
-      return { ok: false, motivo: "Chave do Gemini invalida ou sem permissao (" + r.status + ")." };
+      return { ok: false, motivo: "Configuracao da IA invalida (" + r.status + "). Verifique a chave no Worker." };
     }
-    return { ok: false, motivo: "Erro HTTP " + r.status + " no Gemini." };
+    return { ok: false, motivo: "Erro HTTP " + r.status + " na IA." };
   } catch (e) {
-    return { ok: false, motivo: "Erro de rede no Gemini: " + (e?.message || "desconhecido") };
+    return { ok: false, motivo: "Erro de rede na IA: " + (e?.message || "desconhecido") };
   }
 }
 const OR_MODELOS_FREE_FALLBACK = ["deepseek/deepseek-v4-flash:free", "moonshotai/kimi-k2.6:free"];
@@ -4293,8 +4292,8 @@ function IA({
     let txt = "";
     let ultimoErro = "";
 
-    // 1a tentativa: Gemini (1500/dia gratuitas) — converte historico multi-turno para o formato Gemini
-    if (GEMINI_KEY && GEMINI_KEY !== "SUA_CHAVE_GEMINI_AQUI") {
+    // 1a tentativa: IA via proxy seguro (Worker) — converte historico multi-turno para o formato Gemini
+    if (IA_PROXY_URL && !IA_PROXY_URL.includes("https://oriente-ia.exploredev.workers.dev/")) {
       try {
         const contents = [...hist.map(h => ({
           role: h.role === "assistant" ? "model" : "user",
@@ -4303,11 +4302,10 @@ function IA({
           role: "user",
           parts: [{ text: q }]
         }];
-        const r = await fetch(GEMINI_URL, {
+        const r = await fetch(IA_PROXY_URL, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_KEY
+            "Content-Type": "application/json"
           },
           body: JSON.stringify({
             contents,
@@ -4319,7 +4317,7 @@ function IA({
           const d = await r.json();
           txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
         } else if (r.status === 429) {
-          ultimoErro = "Limite gratuito do Gemini atingido por agora.";
+          ultimoErro = "Limite gratuito da IA atingido por agora.";
         }
       } catch (e) {}
     }

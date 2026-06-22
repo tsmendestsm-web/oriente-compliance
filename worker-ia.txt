@@ -1,0 +1,76 @@
+/**
+ * Oriente Compliance — Proxy seguro de IA (Cloudflare Worker)
+ *
+ * Guarda a chave do Gemini como secret (env.GEMINI_KEY), nunca exposta no front-end.
+ * O app chama este Worker; o Worker chama o Gemini com a chave e devolve a resposta.
+ *
+ * Configuracao (no painel do Cloudflare):
+ *   - Secret:    GEMINI_KEY   = sua chave real (AIza...)
+ *   - Variavel:  GEMINI_MODELO = gemini-3.5-flash   (opcional)
+ */
+
+// Dominios autorizados a usar este proxy (evita que terceiros usem sua cota)
+const ORIGINS_PERMITIDAS = [
+  "https://oriente-compliance.pages.dev",
+  "https://orientesolucoes.com.br",
+  "https://www.orientesolucoes.com.br"
+];
+
+export default {
+  async fetch(request, env) {
+    const origin = request.headers.get("Origin") || "";
+    const permitida = ORIGINS_PERMITIDAS.includes(origin);
+    const corsOrigin = permitida ? origin : ORIGINS_PERMITIDAS[0];
+
+    const cors = {
+      "Access-Control-Allow-Origin": corsOrigin,
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type"
+    };
+
+    // Preflight CORS
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: cors });
+    }
+
+    if (request.method !== "POST") {
+      return json({ error: "Metodo nao permitido" }, 405, cors);
+    }
+
+    // Bloqueia origens nao autorizadas (quando o navegador envia Origin)
+    if (origin && !permitida) {
+      return json({ error: "Origem nao autorizada" }, 403, cors);
+    }
+
+    if (!env.GEMINI_KEY) {
+      return json({ error: "GEMINI_KEY nao configurada no Worker" }, 500, cors);
+    }
+
+    try {
+      const body = await request.json();
+      const modelo = env.GEMINI_MODELO || "gemini-3.5-flash";
+      const url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelo + ":generateContent";
+
+      const r = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": env.GEMINI_KEY
+        },
+        body: JSON.stringify(body)
+      });
+
+      const data = await r.json();
+      return json(data, r.status, cors);
+    } catch (e) {
+      return json({ error: "Erro no proxy: " + (e && e.message ? e.message : "desconhecido") }, 500, cors);
+    }
+  }
+};
+
+function json(obj, status, cors) {
+  return new Response(JSON.stringify(obj), {
+    status: status,
+    headers: { ...cors, "Content-Type": "application/json" }
+  });
+}
