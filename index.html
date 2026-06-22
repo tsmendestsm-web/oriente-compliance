@@ -1,0 +1,5707 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Oriente Compliance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700;900&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#4A1828;min-height:100vh;font-family:"DM Sans","Segoe UI",sans-serif}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:rgba(240,192,96,0.25);border-radius:4px}
+select option{background:#360F1D;color:#F5F0F2}
+@keyframes blink{0%,100%{opacity:.2;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(45,212,160,0.4)}70%{box-shadow:0 0 0 6px rgba(45,212,160,0)}}
+@keyframes pulseRed{0%,100%{box-shadow:0 0 0 0 rgba(255,107,122,0.4)}70%{box-shadow:0 0 0 6px rgba(255,107,122,0)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const {
+  useState,
+  useEffect,
+  useRef
+} = React;
+const SUPABASE_URL = "https://iraddjftufipfugcymly.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlyYWRkamZ0dWZpcGZ1Z2N5bWx5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MzQ3MDQsImV4cCI6MjA5NTMxMDcwNH0.PZ3LwZr4j2OBz_RgRYjO0z6jyr_RtLLhYEHlG5zOLzs";
+const FORM_A_LINK = "https://forms.gle/mHoDvimZFnNyEaadA";
+const FORM_B_LINK = "https://forms.gle/xL7Fmt8WTbWzgT7KA";
+const SHEET_B_CSV = "https://docs.google.com/spreadsheets/d/1SGbsAVFSBMZ0Gf1xgU6Zf17KzKYs8UcE-ZuVOD2-YAI/export?format=csv&gid=1038911872";
+const SHEET_A_CSV = "https://docs.google.com/spreadsheets/d/1Oe53M2mNjJrEDUzwhyTx1oaKnMgv6XAGl6rFJfiQTxA/export?format=csv&gid=142494832";
+const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OR_KEY = "";
+const GEMINI_KEY = "SUA_CHAVE_GEMINI_AQUI";
+const GEMINI_MODELO = "gemini-3.5-flash";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODELO + ":generateContent";
+async function geminiCall(sys, msg, maxTok) {
+  if (!GEMINI_KEY || GEMINI_KEY === "SUA_CHAVE_GEMINI_AQUI") return null;
+  try {
+    const r = await fetch(GEMINI_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_KEY
+      },
+      body: JSON.stringify({
+        contents: [{
+          role: "user",
+          parts: [{ text: msg }]
+        }],
+        systemInstruction: {
+          parts: [{ text: sys }]
+        },
+        generationConfig: {
+          maxOutputTokens: maxTok || 1500
+        }
+      })
+    });
+    if (r.ok) {
+      const d = await r.json();
+      const txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      if (txt) return { ok: true, txt };
+      return { ok: false, motivo: "Resposta vazia do Gemini." };
+    }
+    if (r.status === 429) {
+      return { ok: false, motivo: "Limite gratuito do Gemini atingido por agora (1500/dia)." };
+    }
+    if (r.status === 400 || r.status === 401 || r.status === 403) {
+      return { ok: false, motivo: "Chave do Gemini invalida ou sem permissao (" + r.status + ")." };
+    }
+    return { ok: false, motivo: "Erro HTTP " + r.status + " no Gemini." };
+  } catch (e) {
+    return { ok: false, motivo: "Erro de rede no Gemini: " + (e?.message || "desconhecido") };
+  }
+}
+const OR_MODELOS_FREE_FALLBACK = ["deepseek/deepseek-v4-flash:free", "moonshotai/kimi-k2.6:free"];
+let OR_MODELOS_CACHE = null;
+let OR_MODELOS_CACHE_TS = 0;
+async function getModelosFree() {
+  if (!OR_KEY) return []; // OpenRouter desativado — Gemini e a fonte principal
+  const agora = Date.now();
+  if (OR_MODELOS_CACHE && (agora - OR_MODELOS_CACHE_TS) < 3600000) return OR_MODELOS_CACHE;
+  try {
+    const r = await fetch("https://openrouter.ai/api/v1/models");
+    if (r.ok) {
+      const d = await r.json();
+      const livres = (d.data || [])
+        .filter(m => m.id && m.id.endsWith(":free") && m.pricing && m.pricing.prompt === "0" && m.pricing.completion === "0")
+        .map(m => m.id);
+      if (livres.length > 0) {
+        const priorizados = livres.sort((a, b) => {
+          const score = s => (s.includes("deepseek") ? 0 : s.includes("kimi") || s.includes("moonshot") ? 1 : s.includes("gemma") ? 2 : s.includes("nemotron") ? 3 : 4);
+          return score(a) - score(b);
+        });
+        // Apenas 2 modelos na cascata — cada tentativa consome 1 requisicao da cota gratuita diaria (50/dia sem credito)
+        OR_MODELOS_CACHE = priorizados.slice(0, 2);
+        OR_MODELOS_CACHE_TS = agora;
+        return OR_MODELOS_CACHE;
+      }
+    }
+  } catch (e) {}
+  return OR_MODELOS_FREE_FALLBACK;
+}
+const KIWIFY_START = "https://pay.kiwify.com.br/8Vq3UQy";
+const KIWIFY_PRO = "https://pay.kiwify.com.br/cYxzmsE";
+const WA_NUM = "5511999999999";
+const WA_LINK = "https://wa.me/" + WA_NUM + "?text=" + encodeURIComponent("Olá! Interesse no plano Enterprise da Oriente Compliance.");
+const C = {
+  bg: "#4A1828",
+  bgDeep: "#360F1D",
+  bgCard: "rgba(255,255,255,0.07)",
+  bgInput: "rgba(0,0,0,0.25)",
+  border: "rgba(255,255,255,0.10)",
+  text: "#F5F0F2",
+  textSub: "#D4A8BC",
+  textMute: "#9A6A80",
+  purple: "#9B7EFF",
+  gold: "#F0C060",
+  green: "#2DD4A0",
+  red: "#FF6B7A",
+  orange: "#F4A240",
+  teal: "#40C4D4"
+};
+const NV = {
+  critico: {
+    color: "#FF6B7A",
+    bg: "rgba(255,107,122,0.12)",
+    label: "CRÍTICO"
+  },
+  alerta: {
+    color: "#F4A240",
+    bg: "rgba(244,162,64,0.12)",
+    label: "ALERTA"
+  },
+  atencao: {
+    color: "#F0C060",
+    bg: "rgba(240,192,96,0.10)",
+    label: "ATENÇÃO"
+  },
+  adequado: {
+    color: "#2DD4A0",
+    bg: "rgba(45,212,160,0.12)",
+    label: "ADEQUADO"
+  },
+  referencia: {
+    color: "#40C4D4",
+    bg: "rgba(64,196,212,0.10)",
+    label: "REFERÊNCIA"
+  }
+};
+const SC = {
+  aberta: {
+    color: "#FF6B7A",
+    label: "Aberta"
+  },
+  em_analise: {
+    color: "#F4A240",
+    label: "Em Análise"
+  },
+  atrasado: {
+    color: "#FF4444",
+    label: "Atrasado"
+  },
+  resolvido: {
+    color: "#2DD4A0",
+    label: "Resolvido"
+  },
+  em_investigacao: {
+    color: "#F4A240",
+    label: "Em Análise"
+  },
+  concluida: {
+    color: "#2DD4A0",
+    label: "Resolvido"
+  },
+  em_curso: {
+    color: "#9B7EFF",
+    label: "Em Curso"
+  },
+  pendente: {
+    color: "#9A6A80",
+    label: "Pendente"
+  }
+};
+const LIMITES = {
+  start: {
+    colab: 20,
+    users: 20
+  },
+  pro: {
+    colab: 100,
+    users: 100
+  },
+  enterprise: {
+    colab: 999999,
+    users: 999999
+  }
+};
+const SK = "explore_v4";
+const DD = {
+  empresa: {
+    nome: "",
+    setor: "",
+    colaboradores: 0,
+    plano: "START",
+    logo: ""
+  },
+  indiceExplore: 0,
+  indiceHSP: 0,
+  areas: [],
+  dimensoes: [],
+  denuncias: [],
+  planos: [],
+  usuarios_empresa: [],
+  ia_contexto: "",
+  diagnostico_gerado: false
+};
+function ld() {
+  try {
+    const s = localStorage.getItem(SK);
+    return s ? JSON.parse(s) : {
+      ...DD
+    };
+  } catch {
+    return {
+      ...DD
+    };
+  }
+}
+function sd(d) {
+  try {
+    localStorage.setItem(SK, JSON.stringify(d));
+  } catch {}
+}
+function diasDesde(dataStr) {
+  if (!dataStr) return 0;
+  const p = dataStr.split("/");
+  if (p.length !== 3) return 0;
+  const dt = new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0]));
+  return Math.floor((Date.now() - dt.getTime()) / 86400000);
+}
+function statusReal(den) {
+  if (den.status === "resolvido" || den.status === "concluida") return "resolvido";
+  if (den.status === "em_analise" || den.status === "em_investigacao") {
+    if (diasDesde(den.data) > 14) return "atrasado";
+    return "em_analise";
+  }
+  return den.status || "aberta";
+}
+async function autenticar(email, senha) {
+  const id = email.trim().toLowerCase(),
+    pw = senha.trim();
+  try {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/rpc/autenticar_usuario", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + SUPABASE_ANON
+      },
+      body: JSON.stringify({
+        p_login: id,
+        p_senha: pw
+      })
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d && d.length > 0) return {
+        ...d[0],
+        plano: (d[0].plano || "start").toLowerCase()
+      };
+    }
+  } catch (e) {}
+  try {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/usuarios_compliance?email=eq." + encodeURIComponent(id) + "&senha=eq." + encodeURIComponent(pw) + "&status=eq.ativo&select=id,nome,email,login,plano,status", {
+      headers: {
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + SUPABASE_ANON
+      }
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d && d.length > 0) return {
+        ...d[0],
+        plano: (d[0].plano || "start").toLowerCase()
+      };
+    }
+  } catch (e) {}
+  return null;
+}
+async function alterarSenha(email, novaSenha) {
+  try {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/usuarios_compliance?email=eq." + encodeURIComponent(email), {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + SUPABASE_ANON
+      },
+      body: JSON.stringify({
+        senha: novaSenha
+      })
+    });
+    return r.ok;
+  } catch (e) {
+    return false;
+  }
+}
+function parseCSV(text) {
+  const rows = [];
+  let row = [],
+    f = "",
+    inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      if (inQ && text[i + 1] === '"') {
+        f += '"';
+        i++;
+      } else inQ = !inQ;
+    } else if (c === ',' && !inQ) {
+      row.push(f.trim());
+      f = "";
+    } else if ((c === '\n' || c === '\r') && !inQ) {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(f.trim());
+      f = "";
+      if (row.some(x => x)) rows.push(row);
+      row = [];
+    } else f += c;
+  }
+  if (f || row.length) {
+    row.push(f.trim());
+    if (row.some(x => x)) rows.push(row);
+  }
+  return rows;
+}
+function matchEmp(a, b) {
+  if (!a || !b) return false;
+  return a.toLowerCase().trim().includes(b.toLowerCase().trim()) || b.toLowerCase().trim().includes(a.toLowerCase().trim());
+}
+async function iaCall(sys, msg, maxTok) {
+  let ultimoErro = "";
+
+  // 1a tentativa: Gemini (1500 requisicoes/dia gratuitas, sem cartao)
+  const gem = await geminiCall(sys, msg, maxTok);
+  if (gem && gem.ok) return gem.txt;
+  if (gem) ultimoErro = gem.motivo;
+
+  // 2a tentativa: OpenRouter (fallback, 50 requisicoes/dia gratuitas)
+  const msgs = [{
+    role: "system",
+    content: sys
+  }, {
+    role: "user",
+    content: msg
+  }];
+  let txt = "";
+  const modelos = await getModelosFree();
+  for (const m of modelos) {
+    try {
+      const r = await fetch(OR_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + OR_KEY,
+          "HTTP-Referer": "https://orientesolucoes.com.br",
+          "X-Title": "Oriente Compliance"
+        },
+        body: JSON.stringify({
+          model: m,
+          messages: msgs,
+          max_tokens: maxTok || 1500
+        })
+      });
+      if (r.ok) {
+        const d = await r.json();
+        txt = d?.choices?.[0]?.message?.content || "";
+        if (txt) break;
+      } else {
+        if (r.status === 401) { ultimoErro = "Chave de API invalida ou revogada (401)."; break; }
+        else if (r.status === 402) { ultimoErro = "Sem credito disponivel na conta OpenRouter (402)."; break; }
+        else if (r.status === 429) {
+          const retryAfter = r.headers.get("Retry-After");
+          ultimoErro = "Limite de requisicoes gratuitas atingido por agora." + (retryAfter ? " Aguarde " + retryAfter + "s." : " Aguarde alguns minutos.");
+          break; // outro modelo tambem vai falhar com 429 na mesma janela — nao desperdica mais requisicoes
+        }
+        else ultimoErro = "Erro HTTP " + r.status + " no modelo " + m + ".";
+      }
+    } catch (e) {
+      ultimoErro = "Erro de rede: " + (e?.message || "desconhecido");
+    }
+  }
+  if (txt) return txt;
+  return "[IA indisponivel — " + (ultimoErro || "todos os modelos gratuitos falharam") + "]";
+}
+function gerarAcoesDiagnostico(areas, dimensoes, indiceHSP) {
+  const acoes = [];
+  const jaExiste = (t, lista) => lista.some(p => p.titulo && p.titulo.toLowerCase().slice(0, 25) === t.toLowerCase().slice(0, 25));
+  areas.forEach(a => {
+    if (a.nivel === "critico" || a.nivel === "alerta") {
+      const t = "Mapear e intervir nos riscos psicossociais — " + a.nome;
+      if (!jaExiste(t, acoes)) acoes.push({
+        titulo: t,
+        prazo: "30d",
+        resp: "RH / SESMT",
+        origem: "diagnostico"
+      });
+    }
+  });
+  if (dimensoes.length > 0) {
+    const dc = dimensoes.find(d => d.nome === "Conformidade NR-1");
+    if (dc && dc.valor < 60) {
+      const t = "Elaborar/atualizar o PGR com mapeamento de riscos psicossociais";
+      if (!jaExiste(t, acoes)) acoes.push({
+        titulo: t,
+        prazo: "30d",
+        resp: "SESMT / RH",
+        origem: "diagnostico"
+      });
+    }
+    const dt = dimensoes.find(d => d.nome === "Treinamento");
+    if (dt && dt.valor < 65) {
+      const t = "Capacitar gestores em gestao de riscos psicossociais (NR-1)";
+      if (!jaExiste(t, acoes)) acoes.push({
+        titulo: t,
+        prazo: "60d",
+        resp: "RH / T&D",
+        origem: "diagnostico"
+      });
+    }
+    const dg = dimensoes.find(d => d.nome === "Gestão");
+    if (dg && dg.valor < 60) {
+      const t = "Implementar programa de desenvolvimento de lideranças e cultura";
+      if (!jaExiste(t, acoes)) acoes.push({
+        titulo: t,
+        prazo: "60d",
+        resp: "Diretoria / RH",
+        origem: "diagnostico"
+      });
+    }
+    const dr = dimensoes.find(d => d.nome === "Riscos Psicossociais");
+    if (dr && dr.valor < 55) {
+      const t = "Implantar canal de escuta ativo e politica de prevencao ao assedio";
+      if (!jaExiste(t, acoes)) acoes.push({
+        titulo: t,
+        prazo: "30d",
+        resp: "Compliance / RH",
+        origem: "diagnostico"
+      });
+    }
+    const de = dimensoes.find(d => d.nome === "Emergências");
+    if (de && de.valor < 60) {
+      const t = "Criar plano de resposta a situacoes criticas de saude mental";
+      if (!jaExiste(t, acoes)) acoes.push({
+        titulo: t,
+        prazo: "60d",
+        resp: "SESMT / RH",
+        origem: "diagnostico"
+      });
+    }
+  }
+  const tM = "Estruturar rotina de monitoramento continuo dos indicadores NR-1 (trimestral)";
+  if (!jaExiste(tM, acoes)) acoes.push({
+    titulo: tM,
+    prazo: "90d",
+    resp: "SESMT / Compliance",
+    origem: "diagnostico"
+  });
+  if (indiceHSP < 60) {
+    const t = "Realizar diagnostico aprofundado de saude mental e bem-estar";
+    if (!jaExiste(t, acoes)) acoes.push({
+      titulo: t,
+      prazo: "60d",
+      resp: "RH / SESMT",
+      origem: "diagnostico"
+    });
+  }
+  return acoes;
+}
+async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
+  if (!nomeEmpresa || !nomeEmpresa.trim()) {
+    setErr("Configure o nome da empresa em Configuracoes.");
+    return;
+  }
+  setLoad(true);
+  setErr("");
+  try {
+    const scriptUrl = localStorage.getItem("explore_apps_script") || "";
+    let formB = null,
+      formA = null;
+    if (scriptUrl && scriptUrl.includes("script.google.com")) {
+      try {
+        const r = await fetch(scriptUrl + "?empresa=" + encodeURIComponent(nomeEmpresa) + "&acao=dados", {
+          redirect: "follow"
+        });
+        if (r.ok) {
+          const d = await r.json();
+          if (!d.erro && (d.formB || d.formA)) {
+            formB = d.formB;
+            formA = d.formA;
+          }
+        }
+      } catch (e) {}
+    }
+    if (!formB && !formA) {
+      const toObj = (rows, colEmp) => {
+        if (!rows || rows.length < 2) return {
+          dados: [],
+          total: 0,
+          header: []
+        };
+        const h = rows[0];
+        const ci = colEmp === "last" ? h.length - 1 : colEmp;
+        const dados = rows.slice(1).filter(r => matchEmp(r[ci], nomeEmpresa)).map(r => {
+          const o = {};
+          h.forEach((k, i2) => o[k] = r[i2] || "");
+          return o;
+        });
+        return {
+          header: h,
+          dados,
+          total: dados.length
+        };
+      };
+      const pxs = [u => "https://corsproxy.io/?url=" + encodeURIComponent(u), u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u), u => "https://thingproxy.freeboard.io/fetch/" + u];
+      const buscaCSV = async url => {
+        for (const px of pxs) {
+          try {
+            const r = await fetch(px(url), {
+              cache: "no-cache"
+            });
+            if (r.ok) {
+              const t = await r.text();
+              if (t && t.length > 20 && t.indexOf("<!DOCTYPE") !== 0) return t;
+            }
+          } catch (e) {}
+        }
+        return null;
+      };
+      const [tB, tA] = await Promise.all([buscaCSV(SHEET_B_CSV), buscaCSV(SHEET_A_CSV)]);
+      if (tB) formB = toObj(parseCSV(tB), "last");
+      if (tA) formA = toObj(parseCSV(tA), 1);
+    }
+    if (!formB && !formA) {
+      setErr("Nao foi possivel acessar as planilhas. Configure o Google Apps Script em Configuracoes -> IA.");
+      setLoad(false);
+      return;
+    }
+    if ((!formB || !formB.total) && (!formA || !formA.total)) {
+      setErr("Conexao OK, mas nenhuma resposta para \"" + nomeEmpresa + "\". Verifique se o nome e identico ao dos formularios.");
+      setLoad(false);
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // HSP — Health & Safety Performance Index
+    // Arquitetura: HSP = (HSP-N × 0.35) + (HSP-P × 0.40) + (HSP-G × 0.25)
+    //   HSP-N: Normative Score    (Form A — 7 dimensoes D1..D7)
+    //   HSP-P: People Score       (Form B — 4 dimensoes B1..B4)
+    //   HSP-G: Gap Score          (divergencia entre A e B)
+    // ═══════════════════════════════════════════════════════════════════
+
+    let novasDenuncias = [],
+      areas = [];
+
+    // Helper: detecta colunas numericas (escala 1-5, 1-7 ou 1-10) e normaliza para 0-100
+    const detectColsNum = (hdr, dados, skipIdx) => {
+      const cols = [];
+      hdr.forEach((h, i) => {
+        if (skipIdx && skipIdx.has(i)) return;
+        const valsRaw = dados.map(r => parseFloat(Object.values(r)[i])).filter(v => !isNaN(v));
+        if (valsRaw.length === 0) return;
+        const valsValidos = valsRaw.filter(v => v >= 1 && v <= 10 && Number.isInteger(v));
+        if (valsValidos.length === 0) return;
+        const maxVal = Math.max(...valsValidos);
+        const escala = maxVal <= 5 ? 5 : maxVal <= 7 ? 7 : 10;
+        const media = valsValidos.reduce((a, b) => a + b, 0) / valsValidos.length;
+        const score = Math.round(Math.max(0, Math.min(100, (media - 1) / (escala - 1) * 100)));
+        cols.push({
+          idx: i,
+          media,
+          escala,
+          score,
+          header: String(h || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        });
+      });
+      return cols;
+    };
+
+    // Helper: pega colunas que casam com palavras-chave; fallback para slice proporcional
+    const filtraCols = (cols, patterns, fallbackStart, fallbackEnd) => {
+      const match = cols.filter(c => patterns.some(p => c.header.includes(p)));
+      if (match.length > 0) return match;
+      const N = cols.length;
+      const s = Math.floor(N * fallbackStart),
+        e = Math.ceil(N * fallbackEnd);
+      return cols.slice(s, Math.max(s + 1, e));
+    };
+    const scoreMedio = cols => cols && cols.length ? Math.round(cols.reduce((a, c) => a + c.score, 0) / cols.length) : 0;
+    const classificarFaixa = v => v >= 85 ? "referencia" : v >= 70 ? "adequado" : v >= 55 ? "atencao" : v >= 40 ? "alerta" : "critico";
+
+    // ─── HSP-N (Form A) — 7 dimensoes em 3 blocos normativos ─────────
+    let HSP_N = 0,
+      dimsA = null;
+    if (formA && formA.total > 0) {
+      const hdr = formA.header || [],
+        dados = formA.dados || [];
+      // Identifica coluna de area (departamento)
+      let aCol = hdr.findIndex(h => /area|departamento|setor|dept/i.test(String(h).normalize("NFD").replace(/[\u0300-\u036f]/g, "")));
+      if (aCol < 0) aCol = Math.min(2, hdr.length - 1);
+      const skipA = new Set([0, aCol]);
+      const colsA = detectColsNum(hdr, dados, skipA);
+      if (colsA.length > 0) {
+        // Mapeamento das 7 dimensoes D1..D7 por palavras-chave + fallback proporcional
+        const D1 = filtraCols(colsA, ["pgr", "programa", "gerenciamento", "gestao de risc", "documentac", "conforme", "politic", "registro"], 0.00, 0.18); // PGR / Conformidade documental
+        const D2 = filtraCols(colsA, ["treinam", "capacit", "forma", "instruc", "conscienti"], 0.18, 0.30); // Treinamento
+        const D3 = filtraCols(colsA, ["psicoss", "assedi", "saude mental", "bem-estar", "bemestar", "press", "estress", "sofrim", "emoc", "escuta"], 0.30, 0.50); // Riscos Psicossociais
+        const D4 = filtraCols(colsA, ["maturid", "execu", "controle", "monitor", "indicad", "gestao", "governanc"], 0.50, 0.65); // Maturidade/Execucao
+        const D5 = filtraCols(colsA, ["operac", "processo", "rotina", "fluxo", "procedim"], 0.65, 0.78); // Operacional
+        const D6 = filtraCols(colsA, ["terceir", "fornec", "contrat", "prestad", "parceir"], 0.78, 0.88); // Terceiros
+        const D7 = filtraCols(colsA, ["emergenc", "urgenc", "crise", "incident", "acident", "resposta"], 0.88, 1.00); // Emergencias
+
+        const Pd_D1 = scoreMedio(D1),
+          Pd_D2 = scoreMedio(D2),
+          Pd_D3 = scoreMedio(D3),
+          Pd_D4 = scoreMedio(D4),
+          Pd_D5 = scoreMedio(D5),
+          Pd_D6 = scoreMedio(D6),
+          Pd_D7 = scoreMedio(D7);
+
+        // 3 blocos normativos
+        const BlocoLegal = Pd_D1 * 0.55 + Pd_D3 * 0.45;
+        const BlocoOperacional = Pd_D4 * 0.50 + Pd_D5 * 0.50;
+        const BlocoEmergente = Pd_D2 * 0.40 + Pd_D6 * 0.30 + Pd_D7 * 0.30;
+        HSP_N = Math.round(BlocoLegal * 0.50 + BlocoOperacional * 0.30 + BlocoEmergente * 0.20);
+        dimsA = {
+          D1: Pd_D1,
+          D2: Pd_D2,
+          D3: Pd_D3,
+          D4: Pd_D4,
+          D5: Pd_D5,
+          D6: Pd_D6,
+          D7: Pd_D7,
+          BlocoLegal: Math.round(BlocoLegal),
+          BlocoOperacional: Math.round(BlocoOperacional),
+          BlocoEmergente: Math.round(BlocoEmergente)
+        };
+
+        // Areas por departamento (heatmap de risco)
+        const dmap = {};
+        dados.forEach(row => {
+          const vals = Object.values(row);
+          const dept = String(vals[aCol] || "").trim();
+          if (!dept) return;
+          if (!dmap[dept]) dmap[dept] = [];
+          const nums = colsA.map(c => parseFloat(vals[c.idx])).filter(v => !isNaN(v));
+          if (nums.length) {
+            const med = nums.reduce((a, b) => a + b, 0) / nums.length;
+            const esc = colsA[0]?.escala || 5;
+            dmap[dept].push((med - 1) / (esc - 1) * 100);
+          }
+        });
+        areas = Object.entries(dmap).map(([nome, scs]) => {
+          const score = Math.round(scs.reduce((a, b) => a + b, 0) / scs.length);
+          const risco = 100 - score;
+          const nivel = risco >= 75 ? "critico" : risco >= 55 ? "alerta" : risco >= 35 ? "atencao" : risco >= 15 ? "adequado" : "referencia";
+          return {
+            nome,
+            risco,
+            nivel
+          };
+        }).sort((a, b) => b.risco - a.risco);
+
+        // Sinais de risco em respostas abertas do Form A
+        const idxNumA = new Set(colsA.map(c => c.idx));
+        const pchaveA = ["assedio", "conflito", "tensao", "pressao", "problema", "critico", "urgente", "preocupante", "inadequado", "medo", "violencia"];
+        dados.forEach((row, ri) => {
+          Object.values(row).forEach((txt, fi) => {
+            if (idxNumA.has(fi) || fi === 0 || fi === aCol) return;
+            const s = String(txt || "").trim();
+            if (s.length > 20 && isNaN(parseFloat(s))) {
+              const sLow = s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+              if (pchaveA.some(p => sLow.includes(p))) novasDenuncias.push({
+                id: "DIAG-A-" + String(ri + 1).padStart(3, "0") + "-" + fi,
+                cat: "Sinal de Risco — Relato Gestor",
+                area: "Diagnostico Gestores",
+                data: new Date().toLocaleDateString("pt-BR"),
+                status: "aberta",
+                prioridade: "alta",
+                descricao: s.slice(0, 500),
+                acoes_adotadas: "",
+                origem: "formulario_a"
+              });
+            }
+          });
+        });
+      }
+    }
+
+    // ─── HSP-P (Form B) — 4 dimensoes em 2 blocos funcionais ──────────
+    let HSP_P = 0,
+      dimsB = null;
+    if (formB && formB.total > 0) {
+      const hdr = formB.header || [],
+        dados = formB.dados || [];
+      const colsB = detectColsNum(hdr, dados, new Set([0]));
+      if (colsB.length > 0) {
+        // Mapeamento das 4 dimensoes B1..B4 por palavras-chave + fallback proporcional
+        const B1 = filtraCols(colsB, ["carga", "ritmo", "prazo", "volume", "sobrecarg", "exigenc", "quantidade", "horas", "jornada"], 0.00, 0.25); // Carga
+        const B2 = filtraCols(colsB, ["lideranc", "chefe", "gest", "superior", "decis", "feedback", "reconhec", "apoio"], 0.25, 0.55); // Lideranca
+        const B3 = filtraCols(colsB, ["saude", "bem-estar", "bemestar", "mental", "emocion", "estress", "ansied", "esgota", "sofr"], 0.55, 0.80); // Bem-estar
+        const B4 = filtraCols(colsB, ["comunic", "informac", "clareza", "transpar", "escuta", "canal", "dialogo"], 0.80, 1.00); // Comunicacao
+
+        const Pd_B1 = scoreMedio(B1),
+          Pd_B2 = scoreMedio(B2),
+          Pd_B3 = scoreMedio(B3),
+          Pd_B4 = scoreMedio(B4);
+
+        // 2 blocos funcionais
+        const BlocoRelacional = Pd_B2 * 0.55 + Pd_B3 * 0.45;
+        const BlocoEstrutural = Pd_B1 * 0.52 + Pd_B4 * 0.48;
+        HSP_P = Math.round(BlocoRelacional * 0.60 + BlocoEstrutural * 0.40);
+        dimsB = {
+          B1: Pd_B1,
+          B2: Pd_B2,
+          B3: Pd_B3,
+          B4: Pd_B4,
+          BlocoRelacional: Math.round(BlocoRelacional),
+          BlocoEstrutural: Math.round(BlocoEstrutural)
+        };
+
+        // Sinais de risco em respostas abertas do Form B
+        const idxNumB = new Set(colsB.map(c => c.idx));
+        const colsTexto = [];
+        hdr.forEach((h, i) => {
+          if (i === 0 || idxNumB.has(i)) return;
+          const vals = dados.map(r => String(Object.values(r)[i] || "").trim()).filter(v => v.length > 5 && isNaN(parseFloat(v)));
+          if (vals.length > 0) colsTexto.push(i);
+        });
+        const pchave = ["assedio", "ameaca", "pressao", "humilhacao", "discrimin", "abuso", "coercao", "medo", "constrangimento", "injusto", "violencia", "forcado", "obrigado"];
+        const cats = ["Relato de Experiencia", "Sugestao de Melhoria", "Mensagem a Lideranca"];
+        dados.forEach((row, ri) => {
+          const vals = Object.values(row);
+          colsTexto.slice(0, 5).forEach((ci, fi) => {
+            const s = String(vals[ci] || "").trim();
+            if (s.length > 20) {
+              const sLow = s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+              const temSinal = pchave.some(p => sLow.includes(p));
+              novasDenuncias.push({
+                id: "DIAG-B-" + String(ri + 1).padStart(3, "0") + "-" + fi,
+                cat: temSinal ? "Sinal de Risco Psicossocial" : cats[fi] || "Resposta Aberta",
+                area: "Diagnostico Colaboradores",
+                data: String(vals[0] || "").split(" ")[0] || new Date().toLocaleDateString("pt-BR"),
+                status: "aberta",
+                prioridade: temSinal ? "alta" : "media",
+                descricao: s.slice(0, 500),
+                acoes_adotadas: "",
+                origem: "formulario_b"
+              });
+            }
+          });
+        });
+      }
+    }
+
+    // ─── HSP-G (Gap Score) — divergencia A vs B ───────────────────────
+    let HSP_G = 0,
+      dimsG = null;
+    if (dimsA && dimsB) {
+      const gaps = [];
+      // Par 1: D3 (Riscos Psicossociais) vs media(B2,B3)
+      const g1 = Math.abs(dimsA.D3 - (dimsB.B2 + dimsB.B3) / 2);
+      gaps.push({
+        par: "D3 x (B2+B3)/2",
+        gap: g1
+      });
+      // Par 2: media(D3,D4) vs B1 (Carga)
+      const g2 = Math.abs((dimsA.D3 + dimsA.D4) / 2 - dimsB.B1);
+      gaps.push({
+        par: "(D3+D4)/2 x B1",
+        gap: g2
+      });
+      // Par 3: D3 (proxy para subitem comunicacao) vs B4 (Comunicacao)
+      const g3 = Math.abs(dimsA.D3 - dimsB.B4);
+      gaps.push({
+        par: "D3 x B4",
+        gap: g3
+      });
+      // Fator de penalidade por gap
+      const fator = g => g <= 10 ? 1.0 : g <= 20 ? 1.5 : 2.5;
+      const gapPond = gaps.reduce((a, x) => a + x.gap * fator(x.gap), 0) / gaps.length;
+      HSP_G = Math.round(Math.max(0, 100 - gapPond));
+      dimsG = {
+        gaps,
+        gapPonderado: Math.round(gapPond * 10) / 10
+      };
+    } else if (dimsA || dimsB) {
+      // Se so um formulario respondeu, nao ha gap a medir; usa neutro
+      HSP_G = 100;
+      dimsG = {
+        gaps: [],
+        gapPonderado: 0,
+        observacao: "Apenas um formulario respondido — gap nao calculavel"
+      };
+    }
+
+    // ─── HSP FINAL ────────────────────────────────────────────────────
+    let indiceHSP = 0;
+    if (dimsA && dimsB) {
+      indiceHSP = Math.round(HSP_N * 0.35 + HSP_P * 0.40 + HSP_G * 0.25);
+    } else if (dimsA) {
+      indiceHSP = HSP_N; // so Form A — HSP equivale a HSP-N
+    } else if (dimsB) {
+      indiceHSP = HSP_P; // so Form B — HSP equivale a HSP-P
+    }
+
+    // ─── Dimensoes (visualizacao radar) e Indice Conformidade ─────────
+    let dimensoes = [];
+    if (dimsA) {
+      dimensoes = [{
+        nome: "PGR / Documental",
+        valor: dimsA.D1
+      }, {
+        nome: "Treinamento",
+        valor: dimsA.D2
+      }, {
+        nome: "Riscos Psicossociais",
+        valor: dimsA.D3
+      }, {
+        nome: "Maturidade / Execução",
+        valor: dimsA.D4
+      }, {
+        nome: "Operacional",
+        valor: dimsA.D5
+      }, {
+        nome: "Terceiros",
+        valor: dimsA.D6
+      }, {
+        nome: "Emergências",
+        valor: dimsA.D7
+      }];
+    } else if (dimsB) {
+      dimensoes = [{
+        nome: "Carga de Trabalho",
+        valor: dimsB.B1
+      }, {
+        nome: "Liderança",
+        valor: dimsB.B2
+      }, {
+        nome: "Saúde Mental",
+        valor: dimsB.B3
+      }, {
+        nome: "Comunicação",
+        valor: dimsB.B4
+      }];
+    }
+    const indiceConf = HSP_N; // Form A representa a conformidade normativa
+    const indiceExplore = indiceHSP > 0 && indiceConf > 0 ? Math.round(indiceHSP * 0.6 + indiceConf * 0.4) : indiceHSP || indiceConf || 0;
+    // Se Form B processou mas nao gerou areas (poucas perguntas), usa media geral das dimensoes
+    if (dimensoes.length > 0 && areas.length === 0) {
+      const med = dimensoes.reduce((a, d) => a + d.valor, 0) / dimensoes.length;
+      const risco = 100 - Math.round(med);
+      const nivel = risco >= 75 ? "critico" : risco >= 55 ? "alerta" : risco >= 35 ? "atencao" : "adequado";
+      areas = [{
+        nome: "Geral",
+        risco,
+        nivel
+      }];
+    }
+    setData(prev => {
+      const nd = {
+        ...prev,
+        diagnostico_gerado: true
+      };
+      // FIX 1: preservar sempre a lista de colaboradores cadastrados
+      nd.usuarios_empresa = prev.usuarios_empresa || [];
+      // Detalhes do calculo HSP — disponivel para auditoria e relatorios
+      nd.hsp_detalhe = {
+        HSP_N,
+        HSP_P,
+        HSP_G,
+        faixa: classificarFaixa(indiceHSP),
+        dimsA,
+        dimsB,
+        dimsG,
+        formB_respostas: formB ? formB.total : 0,
+        formA_respostas: formA ? formA.total : 0,
+        timestamp: new Date().toLocaleString("pt-BR")
+      };
+      // Debug retrocompativel
+      nd.diagnostico_debug = {
+        formB_respostas: formB ? formB.total : 0,
+        formA_respostas: formA ? formA.total : 0,
+        dimensoes_calculadas: dimensoes.length,
+        areas_calculadas: areas.length,
+        indiceHSP_calculado: indiceHSP,
+        indiceConf_calculado: indiceConf,
+        HSP_N,
+        HSP_P,
+        HSP_G,
+        timestamp: new Date().toLocaleString("pt-BR")
+      };
+      if (dimensoes.length) nd.dimensoes = dimensoes;
+      if (areas.length) nd.areas = areas;
+      if (indiceHSP > 0) nd.indiceHSP = indiceHSP;
+      if (indiceExplore > 0) nd.indiceExplore = indiceExplore;else if (nd.indiceHSP > 0) nd.indiceExplore = nd.indiceHSP;
+      // Deduplicar ocorrencias por id E por conteudo
+      if (novasDenuncias.length) {
+        const idsExist = new Set((prev.denuncias || []).map(d => d.id));
+        const descsExist = new Set((prev.denuncias || []).map(d => String(d.descricao || "").slice(0, 40)));
+        const novas = novasDenuncias.filter(d => !idsExist.has(d.id) && !descsExist.has(String(d.descricao || "").slice(0, 40)));
+        if (novas.length) nd.denuncias = [...novas, ...(prev.denuncias || [])].slice(0, 100);
+      }
+      const acoesG = gerarAcoesDiagnostico(nd.areas || areas, dimensoes, nd.indiceHSP || indiceHSP);
+      const plEx = prev.planos || [];
+      const novasA = acoesG.filter(a => !plEx.some(p => p.titulo && a.titulo && p.titulo.toLowerCase().slice(0, 25) === a.titulo.toLowerCase().slice(0, 25))).map((a, i) => ({
+        id: "PA-DIAG-" + String(plEx.length + i + 1).padStart(3, "0"),
+        titulo: a.titulo,
+        prazo: a.prazo,
+        resp: a.resp,
+        status: "pendente",
+        prog: 0,
+        origem: "diagnostico"
+      }));
+      nd.planos = [...plEx, ...novasA];
+      sd(nd);
+      return nd;
+    });
+  } catch (e) {
+    const msg = e && e.message ? e.message : e ? String(e) : "erro de conexao";
+    setErr("Erro ao gerar dashboard: " + msg + ". Configure o Google Apps Script em Configuracoes -> IA.");
+  }
+  setLoad(false);
+}
+function msgWA(nome, empresa, isGestor) {
+  const form = isGestor ? FORM_A_LINK : FORM_B_LINK,
+    tipo = isGestor ? "Formulario A (Gestores)" : "Formulario B (Colaboradores)";
+  const txt = "Prezado(a) " + nome.split(" ")[0] + ",\n\nA *" + empresa + "* esta realizando o *Diagnostico NR-1* conforme a *Portaria MTE n 1.419/2024*.\n\n" + (isGestor ? "Como gestor(a), sua visao estrategica e essencial." : "Sua participacao fortalece um ambiente mais saudavel.") + "\n\n* Participacao *anonima e confidencial*\n* " + tipo + "\n* " + form + "\n\nTempo estimado: 5 a 10 minutos. Contamos com voce!\n\n_Oriente Compliance - NR-1_";
+  return encodeURIComponent(txt);
+}
+function abrirWA(numero, nome, empresa, isGestor) {
+  const n = numero.replace(/[^0-9]/g, "");
+  if (n.length < 10) return;
+  window.open("https://wa.me/" + (n.startsWith("55") ? n : "55" + n) + "?text=" + msgWA(nome, empresa, isGestor), "_blank");
+}
+const PAGES_START = ["landing", "dashboard", "hsp", "denuncias", "acoes", "suporte"];
+const PAGES_PRO = ["landing", "dashboard", "hsp", "denuncias", "acoes", "ia", "relatorios", "config", "suporte"];
+function canAccess(pg, u) {
+  if (pg === "landing") return true;
+  if (!u) return false;
+  return (u.plano === "pro" || u.plano === "enterprise" ? PAGES_PRO : PAGES_START).includes(pg);
+}
+function isPro(u) {
+  return u && (u.plano === "pro" || u.plano === "enterprise");
+}
+const Pill = ({
+  nivel: n
+}) => {
+  const v = NV[n] || NV.atencao;
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 9,
+      fontWeight: 800,
+      letterSpacing: 1,
+      padding: "3px 8px",
+      borderRadius: 20,
+      color: v.color,
+      background: v.bg,
+      border: "1px solid " + v.color + "40"
+    }
+  }, v.label);
+};
+const Dot = ({
+  status: s
+}) => {
+  const c = (SC[s] || SC.aberta).color;
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 7,
+      height: 7,
+      borderRadius: "50%",
+      background: c,
+      boxShadow: "0 0 6px " + c + "88",
+      marginRight: 6,
+      flexShrink: 0
+    }
+  });
+};
+const Tag = ({
+  prazo: p
+}) => {
+  const cc = {
+    ["30d"]: C.red,
+    ["60d"]: C.orange,
+    ["90d"]: C.purple
+  }[p] || C.textMute;
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      padding: "2px 8px",
+      borderRadius: 10,
+      color: cc,
+      border: "1px solid " + cc + "55",
+      background: cc + "18"
+    }
+  }, p);
+};
+function Card({
+  children,
+  style = {},
+  accent
+}) {
+  const bClr = accent ? accent + "33" : C.border;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.bgCard,
+      border: "1px solid " + bClr,
+      borderRadius: 16,
+      ...style
+    }
+  }, children);
+}
+const Bar = ({
+  val,
+  n
+}) => {
+  const c = NV[n]?.color || C.purple;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 5,
+      borderRadius: 4,
+      background: "rgba(0,0,0,0.3)",
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: "100%",
+      width: val + "%",
+      borderRadius: 4,
+      background: c,
+      transition: "width 1.2s ease",
+      boxShadow: "0 0 8px " + c + "66"
+    }
+  }));
+};
+function AnimNum({
+  v,
+  suffix = ""
+}) {
+  const [d, setD] = useState(0);
+  useEffect(() => {
+    let c = 0;
+    const s = v / 40;
+    const t = setInterval(() => {
+      c += s;
+      if (c >= v) {
+        setD(v);
+        clearInterval(t);
+      } else setD(Math.round(c));
+    }, 20);
+    return () => clearInterval(t);
+  }, [v]);
+  return /*#__PURE__*/React.createElement("span", null, d, suffix);
+}
+function Gauge({
+  val,
+  color,
+  size = 100,
+  label
+}) {
+  const r = 38,
+    ci = 2 * Math.PI * r,
+    d = val / 100 * ci;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: size,
+    height: size,
+    viewBox: "0 0 100 100"
+  }, /*#__PURE__*/React.createElement("circle", {
+    cx: "50",
+    cy: "50",
+    r: r,
+    fill: "none",
+    stroke: "rgba(0,0,0,0.3)",
+    strokeWidth: "7"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "50",
+    cy: "50",
+    r: r,
+    fill: "none",
+    stroke: color,
+    strokeWidth: "7",
+    strokeDasharray: d + " " + ci,
+    strokeLinecap: "round",
+    transform: "rotate(-90 50 50)",
+    style: {
+      transition: "stroke-dasharray 1.2s ease",
+      filter: "drop-shadow(0 0 6px " + color + "88)"
+    }
+  }), /*#__PURE__*/React.createElement("text", {
+    x: "50",
+    y: "56",
+    textAnchor: "middle",
+    fill: C.text,
+    fontSize: "18",
+    fontWeight: "700",
+    fontFamily: "DM Sans,sans-serif"
+  }, val)), label && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, label));
+}
+function Radar({
+  dims
+}) {
+  const cx = 110,
+    cy = 110,
+    r = 82,
+    n = dims.length;
+  const pts = dims.map((d, i) => {
+    const a = 2 * Math.PI * i / n - Math.PI / 2,
+      p = d.valor / 100;
+    return {
+      x: cx + r * p * Math.cos(a),
+      y: cy + r * p * Math.sin(a),
+      lx: cx + (r + 22) * Math.cos(a),
+      ly: cy + (r + 22) * Math.sin(a)
+    };
+  });
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 220 220",
+    width: "220",
+    height: "220",
+    style: {
+      overflow: "visible"
+    }
+  }, [.25, .5, .75, 1].map((g, gi) => {
+    const gp = Array.from({
+      length: n
+    }, (_, i) => {
+      const a = 2 * Math.PI * i / n - Math.PI / 2;
+      return cx + r * g * Math.cos(a) + "," + (cy + r * g * Math.sin(a));
+    }).join(" ");
+    return /*#__PURE__*/React.createElement("polygon", {
+      key: gi,
+      points: gp,
+      fill: "none",
+      stroke: "rgba(255,255,255,0.06)",
+      strokeWidth: "1"
+    });
+  }), Array.from({
+    length: n
+  }, (_, i) => {
+    const a = 2 * Math.PI * i / n - Math.PI / 2;
+    return /*#__PURE__*/React.createElement("line", {
+      key: i,
+      x1: cx,
+      y1: cy,
+      x2: cx + r * Math.cos(a),
+      y2: cy + r * Math.sin(a),
+      stroke: "rgba(255,255,255,0.06)",
+      strokeWidth: "1"
+    });
+  }), /*#__PURE__*/React.createElement("polygon", {
+    points: pts.map(p => p.x + "," + p.y).join(" "),
+    fill: C.purple + "28",
+    stroke: C.purple,
+    strokeWidth: "1.8",
+    style: {
+      filter: "drop-shadow(0 0 8px " + C.purple + "66)"
+    }
+  }), pts.map((p, i) => /*#__PURE__*/React.createElement("g", {
+    key: i
+  }, /*#__PURE__*/React.createElement("circle", {
+    cx: p.x,
+    cy: p.y,
+    r: 3.5,
+    fill: C.purple,
+    style: {
+      filter: "drop-shadow(0 0 4px " + C.purple + ")"
+    }
+  }), /*#__PURE__*/React.createElement("text", {
+    x: p.lx,
+    y: p.ly + 3,
+    textAnchor: "middle",
+    fill: C.textMute,
+    fontSize: "7.5",
+    fontFamily: "DM Sans,sans-serif"
+  }, dims[i].nome.split(" ")[0]))));
+}
+function Btn({
+  children,
+  variant = "primary",
+  style = {},
+  onClick,
+  disabled = false
+}) {
+  const base = {
+    padding: "10px 20px",
+    borderRadius: 12,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: disabled ? "not-allowed" : "pointer",
+    transition: "all .15s",
+    border: "none",
+    opacity: disabled ? .6 : 1,
+    ...style
+  };
+  const V = {
+    primary: {
+      background: "linear-gradient(135deg,#6E1E3A,#9B7EFF)",
+      color: C.text
+    },
+    ghost: {
+      background: "rgba(255,255,255,0.06)",
+      color: C.textSub,
+      border: "1px solid " + C.border
+    },
+    danger: {
+      background: "rgba(255,107,122,0.15)",
+      color: C.red,
+      border: "1px solid " + C.red + "44"
+    },
+    gold: {
+      background: "linear-gradient(135deg,#8B5E10,#F0C060)",
+      color: "#1a0a00"
+    },
+    success: {
+      background: "rgba(45,212,160,0.12)",
+      color: C.green,
+      border: "1px solid " + C.green + "44"
+    }
+  };
+  return /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...base,
+      ...V[variant]
+    },
+    onClick: disabled ? undefined : onClick
+  }, children);
+}
+const Inp = ({
+  style = {},
+  ...p
+}) => /*#__PURE__*/React.createElement("input", {
+  style: {
+    background: C.bgInput,
+    border: "1px solid " + C.border,
+    borderRadius: 10,
+    padding: "10px 14px",
+    color: C.text,
+    fontSize: 12,
+    outline: "none",
+    width: "100%",
+    boxSizing: "border-box",
+    ...style
+  },
+  ...p
+});
+const Sel = ({
+  children,
+  style = {},
+  ...p
+}) => /*#__PURE__*/React.createElement("select", {
+  style: {
+    background: "#3D1525",
+    border: "1px solid " + C.border,
+    borderRadius: 10,
+    padding: "10px 14px",
+    color: C.text,
+    fontSize: 12,
+    outline: "none",
+    width: "100%",
+    boxSizing: "border-box",
+    ...style
+  },
+  ...p
+}, children);
+function Led({
+  ativo,
+  label
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 10,
+      height: 10,
+      borderRadius: "50%",
+      background: ativo ? C.green : C.red,
+      animation: (ativo ? "pulse" : "pulseRed") + " 2s infinite",
+      boxShadow: "0 0 6px " + (ativo ? C.green : C.red)
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: ativo ? C.green : C.red,
+      fontWeight: 600
+    }
+  }, label));
+}
+function dataFormatada() {
+  const meses = ["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+  const d = new Date();
+  return d.getDate() + " de " + meses[d.getMonth()] + " de " + d.getFullYear();
+}
+function bloco_assinaturas() {
+  return '<div style="margin-top:48px;padding-top:24px;border-top:1px solid #e8d4da">' + '<div style="font-size:9px;color:#9A6A80;text-transform:uppercase;letter-spacing:2px;margin-bottom:24px">Assinaturas Responsaveis</div>' + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:32px">' + '<div style="text-align:center"><div style="height:1px;background:#c8b4bc;margin-bottom:8px"></div><div style="font-size:11px;font-weight:700;color:#5A1E36">Gestor(a) de RH</div><div style="font-size:9px;color:#9A6A80;margin-top:4px">Nome / Matricula</div></div>' + '<div style="text-align:center"><div style="height:1px;background:#c8b4bc;margin-bottom:8px"></div><div style="font-size:11px;font-weight:700;color:#5A1E36">SESMT</div><div style="font-size:9px;color:#9A6A80;margin-top:4px">Nome / CREA ou CRM</div></div>' + '<div style="text-align:center"><div style="height:1px;background:#c8b4bc;margin-bottom:8px"></div><div style="font-size:11px;font-weight:700;color:#5A1E36">Diretoria</div><div style="font-size:9px;color:#9A6A80;margin-top:4px">Nome / Cargo</div></div>' + '</div></div>';
+}
+function css_rel() {
+  return '<style>body{font-family:"Segoe UI",sans-serif;background:#fff;padding:40px;max-width:820px;margin:0 auto;color:#1a0a0f}' + 'h1{color:#5A1E36;font-size:22px;font-weight:900;margin:0}.sub{color:#7B314E;font-size:11px;margin-top:4px}' + '.sec{font-size:9px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#9A6A80;margin:20px 0 10px;border-bottom:1px solid #f0e0e8;padding-bottom:6px}' + '.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}' + '.kpi{background:#fdf5f7;border:1px solid #ead4dc;border-radius:10px;padding:12px;text-align:center}' + '.kv{font-size:24px;font-weight:900}.kl{font-size:8px;color:#9A6A80;text-transform:uppercase;letter-spacing:1px;margin-top:2px}' + '.row{display:flex;align-items:center;padding:7px 10px;border-radius:7px;margin-bottom:5px;background:#fdf5f7;border:1px solid #ead4dc}' + '.rn{font-size:11px;font-weight:600;min-width:140px}.bw{height:5px;background:#ead4dc;border-radius:3px;flex:1;margin:0 8px;overflow:hidden}.bf{height:100%;border-radius:3px}' + '.analise{font-size:12px;line-height:1.9;color:#2D0E1C;background:#fdf5f7;border-left:4px solid #8B2040;padding:16px 20px;border-radius:0 10px 10px 0;margin-bottom:16px;white-space:pre-line}' + '.corpo{font-size:12px;line-height:1.9;color:#2D0E1C;white-space:pre-line}' + '.footer{margin-top:32px;padding-top:12px;border-top:1px solid #ead4dc}' + 'table{width:100%;border-collapse:collapse}th{background:#5A1E36;color:#fff;padding:8px 10px;text-align:left;font-size:9px;letter-spacing:1px;text-transform:uppercase}' + '@media print{button{display:none}}</style>';
+}
+function btn_print() {
+  return '<div style="text-align:center;margin-top:24px"><button onclick="window.print()" style="background:#5A1E36;color:#fff;border:none;padding:12px 28px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">Imprimir / Salvar como PDF</button></div>';
+}
+function header_rel(titulo, subtitulo, logoTag) {
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">' + '<div><h1>' + titulo + '</h1><div class="sub">' + subtitulo + '</div></div>' + logoTag + '</div><hr style="border:none;border-top:2px solid #8B2040;margin-bottom:20px"/>';
+}
+async function gerarRelNR1(data, setLoad) {
+  if (setLoad) setLoad(true);
+  const emp = data.empresa || {};
+  const logoTag = emp.logo ? '<img src="' + emp.logo + '" style="height:60px;object-fit:contain"/>' : "";
+  const nv = {
+    critico: "#D7263D",
+    alerta: "#E67E22",
+    atencao: "#B7860B",
+    adequado: "#2DD4A0",
+    referencia: "#40C4D4"
+  };
+  const dO = data.denuncias.filter(d => d.status !== "resolvido" && d.status !== "concluida").length;
+  const pO = data.planos.filter(p => p.status === "pendente").length;
+  const totalResp = (data.denuncias || []).length;
+  const areas = (data.areas || []).map(a => '<div class="row"><span class="rn">' + a.nome + '</span><div class="bw"><div class="bf" style="width:' + a.risco + '%;background:' + (nv[a.nivel] || "#999") + '"></div></div><span style="font-size:11px;font-weight:700;color:' + (nv[a.nivel] || "#999") + '">' + a.risco + '</span></div>').join("");
+  const dims = (data.dimensoes || []).map(d => '<div class="row"><span class="rn">' + d.nome + '</span><div class="bw"><div class="bf" style="width:' + d.valor + '%;background:#9B7EFF"></div></div><span style="font-size:11px;font-weight:700;color:#9B7EFF">' + d.valor + '</span></div>').join("");
+  const planos = (data.planos || []).slice(0, 10).map(p => {
+    const cc = p.prazo === "30d" ? "#D7263D" : p.prazo === "60d" ? "#E67E22" : "#6E44FF";
+    return '<div class="row"><span style="color:' + cc + ';font-size:8px;font-weight:800;padding:2px 6px;border:1px solid ' + cc + '44;border-radius:8px;margin-right:8px">' + p.prazo + '</span><span style="flex:1;font-size:11px">' + p.titulo + '</span><span style="font-size:9px;color:#9A6A80">' + p.resp + '</span></div>';
+  }).join("");
+  const sysA = "Voce e um especialista em Seguranca e Saude no Trabalho (SST), com profundo conhecimento da NR-1 (Portaria MTE n.1.419/2024), CLT (arts.157-158) e legislacao trabalhista brasileira. Escreva de forma tecnica, formal e probatoria. Use linguagem que sirva como evidencia em fiscalizacao do MTE.";
+  const msgA = "Empresa: " + emp.nome + ". Setor: " + (emp.setor || "N/I") + ". Colaboradores: " + emp.colaboradores + ". Indice HSP: " + data.indiceHSP + "/100. Indice Explore: " + data.indiceExplore + "/100. Areas criticas: " + (data.areas || []).filter(a => a.nivel === "critico" || a.nivel === "alerta").map(a => a.nome).join(", ") + ". Dimensoes criticas: " + (data.dimensoes || []).filter(d => d.valor < 60).map(d => d.nome + "(" + d.valor + ")").join(", ") + ". Ocorrencias abertas: " + dO + ". Respostas coletadas: " + totalResp + ".\n\nEscreva analise tecnica estruturada em 5 paragrafos: (1) Contexto legal NR-1 e Portaria 1.419/2024, (2) Analise dos indicadores coletados, (3) Principais riscos psicossociais identificados, (4) Medidas preventivas obrigatorias, (5) Conclusao probatoria. Max 600 palavras.";
+  const analise = await iaCall(sysA, msgA, 1500);
+  const sysR = "Especialista em SST e gestao de riscos psicossociais (NR-1/Portaria MTE 1.419/2024).";
+  const msgR = "Dados: HSP=" + data.indiceHSP + ", areas criticas: " + (data.areas || []).filter(a => a.nivel === "critico").map(a => a.nome).join(", ") + ", dimensoes: " + (data.dimensoes || []).map(d => d.nome + ":" + d.valor).join(", ") + ". Liste os 5 principais riscos NR-1 identificados com: nome, base legal, nivel (alto/medio/baixo), medida preventiva obrigatoria. Uma linha por risco.";
+  const riscos = await iaCall(sysR, msgR, 800);
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Relatorio NR-1</title>' + css_rel() + '</head><body>' + header_rel("Oriente Compliance", "Relatorio NR-1 - Portaria MTE n.1.419/2024", logoTag) + '<div class="sec">Resumo Executivo</div>' + '<div class="kpis">' + '<div class="kpi"><div class="kv" style="color:#B7860B">' + data.indiceExplore + '</div><div class="kl">Indice Explore</div></div>' + '<div class="kpi"><div class="kv" style="color:#6E44FF">' + data.indiceHSP + '</div><div class="kl">Indice HSP</div></div>' + '<div class="kpi"><div class="kv" style="color:#D7263D">' + dO + '</div><div class="kl">Ocorrencias</div></div>' + '<div class="kpi"><div class="kv" style="color:#E67E22">' + pO + '</div><div class="kl">Acoes Pend.</div></div>' + '</div>' + '<div class="sec">Analise Tecnica — Fundamentacao Legal</div>' + '<div class="analise">' + analise + '</div>' + '<div class="sec">Heatmap de Risco por Area</div>' + areas + '<div class="sec">7 Dimensoes Psicossociais (HSP Score)</div>' + dims + '<div class="sec">Riscos NR-1 Identificados pela IA</div>' + '<div style="background:#fff8f5;border:1px solid #ead4dc;padding:14px 18px;border-radius:10px;font-size:11px;line-height:2;color:#2D0E1C;white-space:pre-line">' + riscos + '</div>' + '<div class="sec">Plano de Acao 30/60/90 Dias</div>' + planos + '<div class="sec">Data de Emissao</div>' + '<div style="font-size:12px;color:#5A1E36;font-weight:600">' + dataFormatada() + '</div>' + bloco_assinaturas() + btn_print() + '</body></html>';
+  if (setLoad) setLoad(false);
+  return html;
+}
+async function gerarParecerExec(data, setLoad) {
+  if (setLoad) setLoad(true);
+  const emp = data.empresa || {};
+  const logoTag = emp.logo ? '<img src="' + emp.logo + '" style="height:50px;object-fit:contain"/>' : "";
+  const nivelG = data.indiceExplore < 40 ? "CRITICO" : data.indiceExplore < 60 ? "ALERTA" : data.indiceExplore < 75 ? "ATENCAO" : "ADEQUADO";
+  const corN = data.indiceExplore < 40 ? "#D7263D" : data.indiceExplore < 60 ? "#E67E22" : data.indiceExplore < 75 ? "#B7860B" : "#2DD4A0";
+  const sys = "Voce e Diretor de SST e Compliance, com amplo dominio da NR-1 e legislacao trabalhista. Escreva pareceres executivos claros, concisos e orientados a decisao.";
+  const msg = "Empresa: " + emp.nome + ". Setor: " + (emp.setor || "N/I") + ". Indice Explore: " + data.indiceExplore + "/100 (" + nivelG + "). Indice HSP: " + data.indiceHSP + "/100. Ocorrencias abertas: " + data.denuncias.filter(d => d.status !== "resolvido" && d.status !== "concluida").length + ". Areas criticas: " + (data.areas || []).filter(a => a.nivel === "critico" || a.nivel === "alerta").map(a => a.nome).join(", ") + ". Escreva parecer executivo em 3 secoes: (1) Diagnostico Situacional (2 paragrafos), (2) Principais Riscos e Impactos (3 topicos objetivos), (3) Recomendacoes Estrategicas Imediatas (3 acoes com prazo). Tom: executivo, direto, referenciado na NR-1 e CLT.";
+  const parecer = await iaCall(sys, msg, 1200);
+  const areas = (data.areas || []).slice(0, 5).map(a => {
+    const nv2 = {
+      critico: "#D7263D",
+      alerta: "#E67E22",
+      atencao: "#B7860B",
+      adequado: "#2DD4A0",
+      referencia: "#40C4D4"
+    };
+    const c = nv2[a.nivel] || "#999";
+    return '<div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:8px;margin-bottom:5px;background:#fdf5f7;border-left:4px solid ' + c + '"><span style="font-size:11px;font-weight:600;flex:1">' + a.nome + '</span><div style="height:6px;width:120px;background:#ead4dc;border-radius:3px;overflow:hidden"><div style="height:100%;width:' + a.risco + '%;background:' + c + '"></div></div><span style="font-size:11px;font-weight:700;color:' + c + '">' + a.risco + '</span></div>';
+  }).join("");
+  const planos = (data.planos || []).filter(p => p.status === "pendente").slice(0, 5).map(p => {
+    const cc = p.prazo === "30d" ? "#D7263D" : p.prazo === "60d" ? "#E67E22" : "#6E44FF";
+    return '<div style="display:flex;gap:8px;align-items:center;padding:7px 10px;border-radius:7px;background:#fdf5f7;border:1px solid #ead4dc;margin-bottom:5px"><span style="color:' + cc + ';font-size:9px;font-weight:800;padding:2px 6px;border:1px solid ' + cc + '44;border-radius:6px">' + p.prazo + '</span><span style="font-size:11px;flex:1">' + p.titulo + '</span></div>';
+  }).join("");
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Parecer Executivo</title>' + css_rel() + '</head><body>' + header_rel("Parecer Executivo", emp.nome + " - Oriente Compliance", logoTag) + '<div style="display:flex;gap:16px;align-items:center;margin-bottom:20px">' + '<div style="text-align:center;padding:16px 24px;background:#fdf5f7;border-radius:12px;border:2px solid ' + corN + '33">' + '<div style="font-size:36px;font-weight:900;color:' + corN + '">' + data.indiceExplore + '</div>' + '<div style="font-size:9px;color:#9A6A80;text-transform:uppercase">Indice Explore</div>' + '<div style="display:inline-block;padding:4px 12px;border-radius:20px;background:' + corN + '18;color:' + corN + ';border:1px solid ' + corN + '44;font-size:9px;font-weight:800;letter-spacing:1px;margin-top:6px">' + nivelG + '</div>' + '</div>' + '<div style="flex:1"><div class="sec" style="margin-top:0">Heatmap — Top Areas de Risco</div>' + areas + '</div>' + '</div>' + '<div class="sec">Analise e Recomendacoes</div>' + '<div class="corpo">' + parecer + '</div>' + '<div class="sec">Acoes Prioritarias Pendentes</div>' + planos + '<div class="sec">Data de Emissao</div>' + '<div style="font-size:12px;color:#5A1E36;font-weight:600">' + dataFormatada() + '</div>' + bloco_assinaturas() + btn_print() + '</body></html>';
+  if (setLoad) setLoad(false);
+  return html;
+}
+async function gerarAuditoria(data, setLoad) {
+  if (setLoad) setLoad(true);
+  const emp = data.empresa || {};
+  const logoTag = emp.logo ? '<img src="' + emp.logo + '" style="height:50px;object-fit:contain"/>' : "";
+  const sys = "Voce e socio senior de auditoria de uma das Big 4 (Ernst Young, KPMG, Deloitte, PwC) com expertise em compliance trabalhista. Redija relatorios de auditoria no padrao internacional: objetivo, escopo, metodologia, achados, riscos, recomendacoes e conclusao. Linguagem formal, estruturada e precisa.";
+  const msg = "Empresa auditada: " + emp.nome + ". Setor: " + (emp.setor || "N/I") + ". Escopo: Conformidade com NR-1 (Portaria MTE 1.419/2024) e gestao de riscos psicossociais. Indicadores: Indice Explore " + data.indiceExplore + "/100, HSP " + data.indiceHSP + "/100. Canal de escuta: " + data.denuncias.length + " registros. Plano: " + data.planos.length + " acoes. Areas: " + (data.areas || []).map(a => a.nome + "(risco:" + a.risco + ")").join(", ") + ". Escreva relatorio completo com: (1) Carta de Transmissao, (2) Escopo e Objetivo, (3) Metodologia, (4) Achados Relevantes (min. 4 achados com rating Alto/Medio/Baixo), (5) Recomendacoes, (6) Conclusao e Opiniao do Auditor. Max 700 palavras.";
+  const texto = await iaCall(sys, msg, 1800);
+  const trilha = (data.planos || []).map((p, i) => {
+    const cc = p.prazo === "30d" ? "#D7263D" : p.prazo === "60d" ? "#E67E22" : "#6E44FF";
+    const sc = p.status === "concluido" ? "Concluido" : p.status === "em_curso" ? "Em Andamento" : "Pendente";
+    return '<tr style="background:' + (i % 2 === 0 ? "#fdf5f7" : "#fff") + '"><td style="padding:7px 10px;font-size:10px">' + p.id + '</td><td style="padding:7px 10px;font-size:11px">' + p.titulo + '</td><td style="padding:7px 10px;font-size:10px;color:' + cc + '">' + p.prazo + '</td><td style="padding:7px 10px;font-size:10px">' + p.resp + '</td><td style="padding:7px 10px;font-size:10px;font-weight:700">' + sc + '</td></tr>';
+  }).join("");
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Auditoria Interna</title>' + css_rel() + '</head><body>' + '<div style="background:linear-gradient(135deg,#3D0F25,#5A1E36);color:#fff;padding:32px;border-radius:12px;margin-bottom:24px">' + '<div style="display:flex;justify-content:space-between;align-items:flex-start">' + '<div><h1 style="color:#fff;font-size:20px;font-weight:900;margin:0">Relatorio de Auditoria Interna</h1><div style="font-size:11px;opacity:.75;margin-top:4px">' + emp.nome + ' - NR-1 / Riscos Psicossociais - ' + dataFormatada() + '</div></div>' + logoTag + '</div></div>' + '<div class="sec">Relatorio de Auditoria — Padrao Big 4</div>' + '<div class="corpo">' + texto + '</div>' + '<div class="sec">Trilha de Evidencias — Plano de Acao</div>' + '<table><tr><th>ID</th><th>Acao</th><th>Prazo</th><th>Responsavel</th><th>Status</th></tr>' + trilha + '</table>' + '<div class="sec">Data de Emissao</div>' + '<div style="font-size:12px;color:#5A1E36;font-weight:600">' + dataFormatada() + '</div>' + bloco_assinaturas() + btn_print() + '</body></html>';
+  if (setLoad) setLoad(false);
+  return html;
+}
+async function gerarSaudeOrg(data, setLoad) {
+  if (setLoad) setLoad(true);
+  const emp = data.empresa || {};
+  const logoTag = emp.logo ? '<img src="' + emp.logo + '" style="height:50px;object-fit:contain"/>' : "";
+  const sys = "Voce e especialista em Saude Ocupacional, Medicina do Trabalho e Psicologia Organizacional, com dominio da CLT (arts.157-158,168,200), NR-1 (Portaria MTE 1.419/2024), Portaria MS 1.339/1999 sobre doencas relacionadas ao trabalho, Resolucao CFM 2.151/2016 e referencias da OMS sobre CID-11 (QD85 esgotamento ocupacional). Escreva de forma tecnica, responsavel e acessivel.";
+  const msg = "Empresa: " + emp.nome + ". Setor: " + (emp.setor || "N/I") + ". Colaboradores: " + emp.colaboradores + ". Indice HSP: " + data.indiceHSP + "/100. Indice Explore: " + data.indiceExplore + "/100. Dimensoes: " + (data.dimensoes || []).map(d => d.nome + ": " + d.valor).join(", ") + ". Escreva relatorio de Saude Organizacional em 6 secoes: (1) Marco Legal e Normativo (CLT, NR-1, Portaria 1.419/2024), (2) Analise do HSP Score e Dimensoes Psicossociais, (3) Fatores Protetores Identificados, (4) Fatores de Risco e Vulnerabilidades, (5) Recomendacoes Clinico-Organizacionais, (6) Indicadores de Monitoramento Continuo. Tom: tecnico, responsavel, sem alarmismo. Max 700 palavras.";
+  const texto = await iaCall(sys, msg, 1800);
+  const dims = (data.dimensoes || []).map(d => {
+    const c = d.valor >= 75 ? "#2DD4A0" : d.valor >= 55 ? "#B7860B" : d.valor >= 35 ? "#E67E22" : "#D7263D";
+    return '<div style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;margin-bottom:5px;background:#fdf5f7"><span style="font-size:11px;flex:1">' + d.nome + '</span><div style="height:6px;width:140px;background:#ead4dc;border-radius:3px;overflow:hidden"><div style="height:100%;width:' + d.valor + '%;background:' + c + '"></div></div><span style="font-size:11px;font-weight:700;color:' + c + '">' + d.valor + '/100</span></div>';
+  }).join("");
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Saude Organizacional</title>' + css_rel() + '</head><body>' + header_rel("Saude Organizacional", emp.nome + " - Relatorio Tecnico - NR-1 / CLT", logoTag) + '<div style="background:#f0f8ff;border-left:4px solid #6E44FF;padding:12px 16px;border-radius:0 10px 10px 0;font-size:11px;color:#2D0E1C;margin-bottom:16px">Base Legal: CLT (arts. 157-158) - NR-1 - Portaria MTE n.1.419/2024 - OMS CID-11 (QD85) - Resolucao CFM 2.151/2016 - Portaria MS 1.339/1999</div>' + '<div class="sec">7 Dimensoes Psicossociais — HSP Score</div>' + dims + '<div class="sec">Analise Tecnica de Saude Organizacional</div>' + '<div class="corpo">' + texto + '</div>' + '<div class="sec">Data de Emissao</div>' + '<div style="font-size:12px;color:#5A1E36;font-weight:600">' + dataFormatada() + '</div>' + bloco_assinaturas() + btn_print() + '</body></html>';
+  if (setLoad) setLoad(false);
+  return html;
+}
+async function gerarCanalDen(data, setLoad) {
+  if (setLoad) setLoad(true);
+  const emp = data.empresa || {};
+  const logoTag = emp.logo ? '<img src="' + emp.logo + '" style="height:50px;object-fit:contain"/>' : "";
+  const dens = data.denuncias || [];
+  const abertas = dens.filter(d => statusReal(d) === "aberta").length;
+  const emAnalise = dens.filter(d => statusReal(d) === "em_analise").length;
+  const resolvidas = dens.filter(d => statusReal(d) === "resolvido").length;
+  const atrasadas = dens.filter(d => statusReal(d) === "atrasado").length;
+  const sys = "Especialista em Compliance, Canal de Escuta Organizacional e Gestao de Conflitos (ABNT NBR ISO 37001, Lei Anticorrupcao 12.846/2013, NR-1, LGPD).";
+  const msg = "Canal de Escuta — " + emp.nome + ". Total: " + dens.length + ". Abertas: " + abertas + ". Em analise: " + emAnalise + ". Resolvidas: " + resolvidas + ". Atrasadas (mais de 14 dias): " + atrasadas + ". Categorias: " + dens.slice(0, 10).map(d => d.cat).join(", ") + ". Elabore: (1) Analise dos registros e padroes identificados, (2) SLAs recomendados por categoria (alta prioridade 72h, media 7 dias, baixa 15 dias), (3) Acoes praticas e objetivas para cada categoria, (4) Indicadores de desempenho do canal, (5) Recomendacoes de aprimoramento. Max 600 palavras.";
+  const analise = await iaCall(sys, msg, 1500);
+  const linhasDen = dens.slice(0, 20).map((d, i) => {
+    const sr = statusReal(d);
+    const cc = sr === "resolvido" ? "#2DD4A0" : sr === "atrasado" ? "#FF4444" : sr === "em_analise" ? "#E67E22" : "#FF6B7A";
+    const sl = (SC[sr] || {
+      label: sr
+    }).label;
+    return '<tr style="background:' + (i % 2 === 0 ? "#fdf5f7" : "#fff") + '"><td style="padding:7px 10px;font-size:10px">' + d.id + '</td><td style="padding:7px 10px;font-size:10px">' + d.cat + '</td><td style="padding:7px 10px;font-size:10px">' + d.area + '</td><td style="padding:7px 10px;font-size:10px">' + d.data + '</td><td style="padding:7px 10px;font-size:10px;font-weight:700;color:' + cc + '">' + sl + '</td></tr>';
+  }).join("");
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Canal de Ocorrencias</title>' + css_rel() + '</head><body>' + header_rel("Canal de Ocorrencias", emp.nome + " - Relatorio de Gestao - LGPD / NR-1", logoTag) + '<div class="kpis">' + '<div class="kpi"><div class="kv" style="color:#9A6A80">' + dens.length + '</div><div class="kl">Total</div></div>' + '<div class="kpi"><div class="kv" style="color:#FF6B7A">' + abertas + '</div><div class="kl">Abertas</div></div>' + '<div class="kpi"><div class="kv" style="color:#FF4444">' + atrasadas + '</div><div class="kl">Atrasadas</div></div>' + '<div class="kpi"><div class="kv" style="color:#2DD4A0">' + resolvidas + '</div><div class="kl">Resolvidas</div></div>' + '</div>' + '<div class="sec">Analise, SLAs e Proposicoes</div>' + '<div class="corpo">' + analise + '</div>' + '<div class="sec">Registro de Ocorrencias</div>' + '<table><tr><th>ID</th><th>Categoria</th><th>Area</th><th>Data</th><th>Status</th></tr>' + linhasDen + '</table>' + '<div class="sec">Data de Emissao</div>' + '<div style="font-size:12px;color:#5A1E36;font-weight:600">' + dataFormatada() + '</div>' + bloco_assinaturas() + btn_print() + '</body></html>';
+  if (setLoad) setLoad(false);
+  return html;
+}
+async function gerarRelIA(data, setLoad) {
+  if (setLoad) setLoad(true);
+  const emp = data.empresa || {};
+  const logoTag = emp.logo ? '<img src="' + emp.logo + '" style="height:50px;object-fit:contain"/>' : "";
+  const sys = "Voce e um cientista de dados e consultor organizacional inovador. Identifica padroes ocultos, gera insights nao-obvios e propoe acoes disruptivas mas realistas. Linguagem objetiva, rica em dados e criatividade aplicada.";
+  const msg = "Dados organizacionais — " + emp.nome + ". HSP=" + data.indiceHSP + ", Explore=" + data.indiceExplore + ". Areas: " + (data.areas || []).map(a => a.nome + ":" + a.risco).join(",") + ". Dimensoes: " + (data.dimensoes || []).map(d => d.nome + ":" + d.valor).join(",") + ". Registros canal: " + data.denuncias.length + ". Categorias: " + (data.denuncias || []).slice(0, 10).map(d => d.cat).join(",") + ". Gere: (1) 5 Insights Criticos nao-obvios identificados nos dados, (2) 3 Correlacoes Relevantes entre dimensoes, (3) 4 Acoes Inovadoras e Praticas com impacto estimado, (4) Indice de Maturidade em Compliance 0-100 com justificativa, (5) Projecao de Risco para 6 meses se nada for feito. Seja criativo, preciso e orientado a resultado.";
+  const insights = await iaCall(sys, msg, 1800);
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Relatorio de IA</title>' + css_rel() + '</head><body>' + header_rel("Relatorio de Inteligencia", emp.nome + " - Insights e Padroes - Gerado por IA", logoTag) + '<div class="kpis">' + '<div class="kpi"><div class="kv" style="color:#B7860B">' + data.indiceExplore + '</div><div class="kl">Indice Explore</div></div>' + '<div class="kpi"><div class="kv" style="color:#6E44FF">' + data.indiceHSP + '</div><div class="kl">Indice HSP</div></div>' + '<div class="kpi"><div class="kv" style="color:#E67E22">' + (data.denuncias || []).length + '</div><div class="kl">Registros</div></div>' + '<div class="kpi"><div class="kv" style="color:#2DD4A0">' + (data.planos || []).length + '</div><div class="kl">Acoes</div></div>' + '</div>' + '<div class="sec">Insights, Padroes e Acoes Inovadoras</div>' + '<div class="corpo">' + insights + '</div>' + '<div class="sec">Data de Geracao</div>' + '<div style="font-size:12px;color:#5A1E36;font-weight:600">' + dataFormatada() + '</div>' + btn_print() + '</body></html>';
+  if (setLoad) setLoad(false);
+  return html;
+}
+function ModalGerandoPDF({
+  tipo
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.78)",
+      backdropFilter: "blur(6px)",
+      zIndex: 1000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#2D0E1C",
+      border: "1px solid " + C.border,
+      borderRadius: 20,
+      padding: "32px",
+      maxWidth: 380,
+      width: "90%",
+      textAlign: "center",
+      animation: "slideIn .25s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 32,
+      marginBottom: 12
+    }
+  }, "⏳"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 800,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "Gerando ", tipo), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textMute,
+      lineHeight: 1.6
+    }
+  }, "A IA esta analisando os dados e redigindo o relatorio. Aguarde alguns segundos...")));
+}
+function ModalLogin({
+  onClose,
+  onLogin
+}) {
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+  const [load, setLoad] = useState(false);
+  const entrar = async () => {
+    if (!email.trim() || !senha.trim()) {
+      setErro("Preencha e-mail e senha.");
+      return;
+    }
+    setLoad(true);
+    setErro("");
+    const u = await autenticar(email.trim(), senha.trim());
+    if (!u) {
+      setErro("E-mail ou senha invalidos.");
+      setLoad(false);
+      return;
+    }
+    onLogin(u, senha.trim());
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.82)",
+      backdropFilter: "blur(8px)",
+      zIndex: 1000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "linear-gradient(145deg,#2D0E1C,#1A0510)",
+      border: "1px solid " + C.border,
+      borderRadius: 20,
+      padding: "36px",
+      maxWidth: 420,
+      width: "90%",
+      animation: "slideIn .25s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 28
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 48,
+      height: 48,
+      borderRadius: 14,
+      background: "linear-gradient(135deg,#8B2040,#9B7EFF)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 22,
+      color: "#fff",
+      fontWeight: 900,
+      margin: "0 auto 14px"
+    }
+  }, "E"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 800,
+      color: C.text,
+      marginBottom: 4
+    }
+  }, "Acesse sua conta"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textMute
+    }
+  }, "Oriente Compliance")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "E-mail"), /*#__PURE__*/React.createElement(Inp, {
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    onKeyDown: e => e.key === "Enter" && entrar(),
+    placeholder: "seu@email.com.br",
+    type: "email"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Senha"), /*#__PURE__*/React.createElement(Inp, {
+    type: "password",
+    value: senha,
+    onChange: e => setSenha(e.target.value),
+    onKeyDown: e => e.key === "Enter" && entrar(),
+    placeholder: "Sua senha",
+    maxLength: 12
+  })), erro && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(255,107,122,0.1)",
+      border: "1px solid " + C.red + "44",
+      borderRadius: 8,
+      padding: "10px 12px",
+      marginBottom: 14,
+      fontSize: 12,
+      color: C.red
+    }
+  }, erro), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    style: {
+      width: "100%",
+      padding: "13px",
+      fontSize: 13
+    },
+    onClick: entrar,
+    disabled: load
+  }, load ? "Verificando..." : "Entrar"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    style: {
+      background: "none",
+      border: "none",
+      color: C.textMute,
+      fontSize: 11,
+      cursor: "pointer"
+    }
+  }, "Cancelar"))));
+}
+function AlterarSenha({
+  usuario,
+  onConcluido
+}) {
+  const [nova, setNova] = useState("");
+  const [conf, setConf] = useState("");
+  const [erro, setErro] = useState("");
+  const [load, setLoad] = useState(false);
+  const salvar = async () => {
+    if (nova.length < 6 || nova.length > 12) {
+      setErro("Senha: 6 a 12 caracteres.");
+      return;
+    }
+    if (!/[a-zA-Z]/.test(nova) || !/[0-9]/.test(nova)) {
+      setErro("Senha deve ter letras e numeros.");
+      return;
+    }
+    if (nova !== conf) {
+      setErro("As senhas nao coincidem.");
+      return;
+    }
+    setLoad(true);
+    const ok = await alterarSenha(usuario.email, nova);
+    if (ok) {
+      localStorage.setItem("explore_pw_" + usuario.email, "1");
+      onConcluido({
+        ...usuario,
+        senha: nova
+      });
+    } else {
+      setErro("Erro ao salvar. Tente novamente.");
+      setLoad(false);
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bgDeep,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "linear-gradient(145deg,#2D0E1C,#1A0510)",
+      border: "1px solid " + C.border,
+      borderRadius: 20,
+      padding: "40px",
+      maxWidth: 440,
+      width: "100%",
+      animation: "slideIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 32
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 32,
+      marginBottom: 12
+    }
+  }, "🔒"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 800,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "Primeiro acesso"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.textSub,
+      lineHeight: 1.6
+    }
+  }, "Crie sua senha pessoal para continuar.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.gold + "0A",
+      border: "1px solid " + C.gold + "33",
+      borderRadius: 10,
+      padding: "12px 14px",
+      marginBottom: 24,
+      fontSize: 12,
+      color: C.gold
+    }
+  }, "Senha: 6 a 12 caracteres com letras e numeros."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Nova Senha"), /*#__PURE__*/React.createElement(Inp, {
+    type: "password",
+    value: nova,
+    onChange: e => setNova(e.target.value),
+    placeholder: "Nova senha",
+    maxLength: 12
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Confirmar Senha"), /*#__PURE__*/React.createElement(Inp, {
+    type: "password",
+    value: conf,
+    onChange: e => setConf(e.target.value),
+    onKeyDown: e => e.key === "Enter" && salvar(),
+    placeholder: "Repita a senha",
+    maxLength: 12
+  })), erro && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(255,107,122,0.1)",
+      border: "1px solid " + C.red + "44",
+      borderRadius: 8,
+      padding: "10px 12px",
+      marginBottom: 16,
+      fontSize: 12,
+      color: C.red
+    }
+  }, erro), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    style: {
+      width: "100%",
+      padding: "13px",
+      fontSize: 13
+    },
+    onClick: salvar,
+    disabled: load
+  }, load ? "Salvando..." : "Salvar senha")));
+}
+const NAV_ITEMS = [{
+  id: "landing",
+  icon: "&#11041;",
+  label: "Home"
+}, {
+  id: "dashboard",
+  icon: "&#10824;",
+  label: "Dashboard"
+}, {
+  id: "hsp",
+  icon: "&#9678;",
+  label: "HSP"
+}, {
+  id: "denuncias",
+  icon: "&#10001;",
+  label: "Ocorrencias"
+}, {
+  id: "acoes",
+  icon: "&#9635;",
+  label: "Plano de Acao"
+}, {
+  id: "ia",
+  icon: "&#10022;",
+  label: "IA Organizacional"
+}, {
+  id: "relatorios",
+  icon: "&#8862;",
+  label: "Relatorios"
+}, {
+  id: "suporte",
+  icon: "&#9993;",
+  label: "Suporte"
+}, {
+  id: "config",
+  icon: "&#9881;",
+  label: "Config"
+}];
+function Sidebar({
+  page,
+  navigate,
+  usuario,
+  onLogout,
+  data
+}) {
+  const logo = data?.empresa?.logo;
+  const bgAvt = isPro(usuario) ? "linear-gradient(135deg,#6E44FF,#9B7EFF)" : "linear-gradient(135deg,#2DD4A0,#40C4D4)";
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 168,
+      minHeight: "100vh",
+      background: C.bgDeep,
+      borderRight: "1px solid " + C.border,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "stretch",
+      paddingTop: 16,
+      flexShrink: 0,
+      position: "sticky",
+      top: 0,
+      height: "100vh",
+      overflowY: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: () => navigate("landing"),
+    style: {
+      display: "flex",
+      justifyContent: "center",
+      marginBottom: 20,
+      cursor: "pointer",
+      padding: "0 12px"
+    }
+  }, logo ? /*#__PURE__*/React.createElement("img", {
+    src: logo,
+    style: {
+      width: "100%",
+      maxHeight: 44,
+      objectFit: "contain",
+      background: "rgba(255,255,255,0.08)",
+      borderRadius: 8
+    },
+    alt: "Logo"
+  }) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 38,
+      height: 38,
+      borderRadius: 12,
+      background: "linear-gradient(135deg,#8B2040,#9B7EFF)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 16,
+      color: "#fff",
+      fontWeight: 900
+    }
+  }, "E")), NAV_ITEMS.map(n => {
+    const ok = canAccess(n.id, usuario);
+    const at = page === n.id;
+    return /*#__PURE__*/React.createElement("button", {
+      key: n.id,
+      onClick: () => navigate(n.id),
+      title: !ok ? n.label + " (login necessario)" : "",
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 16px",
+        border: "none",
+        cursor: ok ? "pointer" : "not-allowed",
+        background: at ? "rgba(155,126,255,0.18)" : "transparent",
+        color: at ? C.purple : ok ? C.textSub : "rgba(154,106,128,0.3)",
+        fontSize: 12,
+        fontWeight: at ? 700 : 400,
+        transition: "all .2s",
+        textAlign: "left",
+        borderLeft: at ? "3px solid " + C.purple : "3px solid transparent",
+        outline: "none"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        flexShrink: 0,
+        minWidth: 18
+      },
+      dangerouslySetInnerHTML: {
+        __html: n.icon
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        fontSize: 11
+      }
+    }, n.label));
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }), usuario && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "10px 14px",
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      borderTop: "1px solid " + C.border
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 28,
+      height: 28,
+      borderRadius: "50%",
+      background: bgAvt,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 11,
+      color: "#fff",
+      fontWeight: 700,
+      flexShrink: 0
+    }
+  }, (usuario.nome || "A").charAt(0).toUpperCase()), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.text,
+      fontWeight: 600,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, usuario.nome), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      color: C.textMute
+    }
+  }, (usuario.plano || "start").toUpperCase()))), /*#__PURE__*/React.createElement("button", {
+    onClick: onLogout,
+    style: {
+      margin: "4px 12px 12px",
+      padding: "8px",
+      borderRadius: 10,
+      border: "1px solid " + C.border,
+      background: "transparent",
+      color: C.textMute,
+      fontSize: 11,
+      cursor: "pointer"
+    }
+  }, "Sair")));
+}
+function Landing({
+  navigate,
+  abrirLogin
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.bgDeep,
+      animation: "fadeIn .4s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      padding: "80px 60px 60px",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: "clamp(28px,4vw,52px)",
+      fontWeight: 900,
+      color: C.text,
+      margin: "0 0 16px",
+      letterSpacing: -1.5,
+      lineHeight: 1.15
+    }
+  }, "Sua empresa pode estar", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold
+    }
+  }, "acumulando riscos"), " sem perceber."), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 17,
+      color: C.textSub,
+      maxWidth: 560,
+      margin: "0 auto 32px",
+      lineHeight: 1.7
+    }
+  }, "A NR-1 ja exige gestao ativa de riscos psicossociais.", /*#__PURE__*/React.createElement("br", null), "A Oriente Compliance e seu centro de inteligencia organizacional."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      justifyContent: "center",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "gold",
+    style: {
+      padding: "14px 32px",
+      fontSize: 14
+    },
+    onClick: () => navigate("dashboard")
+  }, "Descubra seu nivel de exposicao"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    style: {
+      padding: "14px 24px",
+      fontSize: 14
+    },
+    onClick: abrirLogin
+  }, "Ja tenho acesso — Entrar"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "20px 60px 40px",
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
+      gap: 16
+    }
+  }, [{
+    icon: "&#9888;",
+    t: "Risco Juridico",
+    d: "Portaria MTE n.1.419/2024 torna obrigatorio o mapeamento de riscos psicossociais. Multas de ate R$ 6.500 por infracao, alem de passivos trabalhistas milionarios.",
+    c: C.red
+  }, {
+    icon: "&#129504;",
+    t: "Risco Psicossocial",
+    d: "72% dos trabalhadores brasileiros relatam esgotamento (FGV/2024). Custo medio de R$ 48.000 por colaborador afastado. Gestao preventiva e mais eficiente e exigida por lei.",
+    c: C.orange
+  }, {
+    icon: "&#128203;",
+    t: "Conformidade NR-1",
+    d: "Vigencia obrigatoria a partir de maio/2025 para TODAS as empresas. Canal de escuta, prevencao documentada e registros auditaveis sao requisitos da norma.",
+    c: C.teal
+  }].map((d, i) => /*#__PURE__*/React.createElement(Card, {
+    key: i,
+    style: {
+      padding: "28px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 28,
+      marginBottom: 12
+    },
+    dangerouslySetInnerHTML: {
+      __html: d.icon
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 800,
+      color: C.text,
+      marginBottom: 10
+    }
+  }, d.t), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textSub,
+      lineHeight: 1.7
+    }
+  }, d.d)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "0 60px 60px",
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
+      gap: 16,
+      maxWidth: 960,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(0,0,0,0.2)",
+      border: "2px solid " + C.border,
+      borderRadius: 20,
+      padding: "28px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 800,
+      color: C.teal,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 8
+    }
+  }, "START"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30,
+      fontWeight: 900,
+      color: C.text
+    }
+  }, "R$ 297", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 400,
+      color: C.textMute
+    }
+  }, "/mes")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textSub,
+      marginBottom: 18,
+      marginTop: 4
+    }
+  }, "Ate 20 colaboradores"), ["Dashboard executivo", "HSP Score", "Canal de ocorrencias", "Plano de acao 30/60/90", "Suporte por e-mail"].map((f, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.teal,
+      fontSize: 12
+    }
+  }, "✓"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.textSub
+    }
+  }, f))), /*#__PURE__*/React.createElement("a", {
+    href: KIWIFY_START,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      display: "block",
+      marginTop: 20,
+      padding: "11px",
+      borderRadius: 12,
+      border: "1px solid " + C.teal + "44",
+      background: C.teal + "11",
+      color: C.teal,
+      fontSize: 12,
+      fontWeight: 700,
+      textAlign: "center",
+      textDecoration: "none"
+    }
+  }, "Comecar agora")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "linear-gradient(145deg,#5A1E38,#3D0F25)",
+      border: "2px solid " + C.purple,
+      borderRadius: 20,
+      padding: "28px 24px",
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: -12,
+      left: "50%",
+      transform: "translateX(-50%)",
+      background: C.purple,
+      color: "#fff",
+      fontSize: 10,
+      fontWeight: 800,
+      padding: "4px 14px",
+      borderRadius: 20,
+      whiteSpace: "nowrap"
+    }
+  }, "MAIS POPULAR"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 800,
+      color: C.purple,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 8
+    }
+  }, "PRO"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30,
+      fontWeight: 900,
+      color: C.text
+    }
+  }, "R$ 697", /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 400,
+      color: C.textMute
+    }
+  }, "/mes")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textSub,
+      marginBottom: 18,
+      marginTop: 4
+    }
+  }, "Ate 100 colaboradores"), ["Tudo do START", "IA Organizacional", "Relatorios NR-1", "Pareceres por IA", "Suporte prioritario"].map((f, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.purple,
+      fontSize: 12
+    }
+  }, "✓"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.textSub
+    }
+  }, f))), /*#__PURE__*/React.createElement("a", {
+    href: KIWIFY_PRO,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      display: "block",
+      marginTop: 20,
+      padding: "11px",
+      borderRadius: 12,
+      border: "none",
+      background: "linear-gradient(135deg,#6E1E3A,#9B7EFF)",
+      color: "#fff",
+      fontSize: 12,
+      fontWeight: 700,
+      textAlign: "center",
+      textDecoration: "none"
+    }
+  }, "Comecar agora")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(0,0,0,0.2)",
+      border: "2px solid " + C.gold + "44",
+      borderRadius: 20,
+      padding: "28px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 800,
+      color: C.gold,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 8
+    }
+  }, "ENTERPRISE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30,
+      fontWeight: 900,
+      color: C.text
+    }
+  }, "Sob consulta"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textSub,
+      marginBottom: 18,
+      marginTop: 4
+    }
+  }, "Colaboradores ilimitados"), ["Tudo do PRO", "Multi-empresa", "Consultoria Explore", "Implantacao e treinamento", "SLA dedicado"].map((f, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.gold,
+      fontSize: 12
+    }
+  }, "✓"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.textSub
+    }
+  }, f))), /*#__PURE__*/React.createElement("a", {
+    href: WA_LINK,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      display: "block",
+      marginTop: 20,
+      padding: "11px",
+      borderRadius: 12,
+      border: "1px solid " + C.gold + "44",
+      background: C.gold + "11",
+      color: C.gold,
+      fontSize: 12,
+      fontWeight: 700,
+      textAlign: "center",
+      textDecoration: "none"
+    }
+  }, "WhatsApp"))));
+}
+function Dashboard({
+  data,
+  setData,
+  navigate
+}) {
+  const [loadG, setLoadG] = useState(false);
+  const [erroG, setErroG] = useState("");
+  const nome = data.empresa?.nome || "";
+  const temDados = data.areas && data.areas.length > 0;
+  const maxR = temDados ? Math.max(...data.areas.map(a => a.risco)) : 0;
+  const nivelG = maxR >= 75 ? "critico" : maxR >= 55 ? "alerta" : maxR >= 35 ? "atencao" : "adequado";
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      display: "flex",
+      flexDirection: "column",
+      gap: 18,
+      animation: "fadeIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      flexWrap: "wrap",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 4
+    }
+  }, "Centro de Inteligencia"), /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "Dashboard Executivo")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    style: {
+      fontSize: 11,
+      padding: "8px 14px"
+    },
+    onClick: () => gerarDashboard(nome, setData, setLoadG, setErroG),
+    disabled: loadG
+  }, loadG ? "Analisando..." : "Gerar Dashboard"), temDados && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "6px 14px",
+      borderRadius: 20,
+      fontSize: 11,
+      fontWeight: 700,
+      background: NV[nivelG].bg,
+      color: NV[nivelG].color,
+      border: "1px solid " + NV[nivelG].color + "44"
+    }
+  }, NV[nivelG].label))), erroG && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(255,107,122,0.1)",
+      border: "1px solid " + C.red + "44",
+      borderRadius: 8,
+      padding: "10px 14px",
+      fontSize: 12,
+      color: C.red
+    }
+  }, erroG), data.diagnostico_debug && data.indiceHSP === 0 && (data.diagnostico_debug.formB_respostas > 0 || data.diagnostico_debug.formA_respostas > 0) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(240,162,64,0.10)",
+      border: "1px solid " + C.orange + "44",
+      borderRadius: 10,
+      padding: "14px 18px",
+      fontSize: 12,
+      color: C.textSub,
+      lineHeight: 1.7
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: C.orange,
+      marginBottom: 6
+    }
+  }, "Diagnostico parcial — verificacao necessaria"), "Recebidos: ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.text
+    }
+  }, data.diagnostico_debug.formB_respostas, " respostas no Form B"), " e ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.text
+    }
+  }, data.diagnostico_debug.formA_respostas, " no Form A"), ", mas nenhuma pergunta com escala numerica foi detectada. Verifique se as respostas dos formularios usam escala numerica (1 a 5, 1 a 7 ou 1 a 10). Ultima leitura: ", data.diagnostico_debug.timestamp, "."), !temDados ? /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "48px 32px",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 48,
+      marginBottom: 16
+    }
+  }, "📊"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 800,
+      color: C.text,
+      marginBottom: 10
+    }
+  }, "Dashboard aguardando dados"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.textSub,
+      maxWidth: 480,
+      margin: "0 auto 28px",
+      lineHeight: 1.7
+    }
+  }, "Configure a empresa, envie os formularios NR-1 e clique em ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.gold
+    }
+  }, "Gerar Dashboard"), "."), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: () => navigate("config")
+  }, "Configurar empresa")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))",
+      gap: 14
+    }
+  }, [{
+    label: "Indice Explore",
+    val: data.indiceExplore,
+    suffix: "/100",
+    color: C.gold,
+    desc: "Saude organizacional"
+  }, {
+    label: "Indice HSP",
+    val: data.indiceHSP,
+    suffix: "/100",
+    color: C.purple,
+    desc: "Saude psicossocial"
+  }, {
+    label: "Ocorrencias",
+    val: data.denuncias.filter(d => d.status !== "resolvido" && d.status !== "concluida").length,
+    suffix: "",
+    color: C.red,
+    desc: "Abertas/Em analise"
+  }, {
+    label: "Acoes Pend.",
+    val: data.planos.filter(p => p.status === "pendente").length,
+    suffix: "",
+    color: C.orange,
+    desc: "No plano 30/60/90"
+  }].map((k, i) => /*#__PURE__*/React.createElement(Card, {
+    key: i,
+    accent: k.color,
+    style: {
+      padding: "18px 20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      textTransform: "uppercase",
+      letterSpacing: 1.5,
+      marginBottom: 10
+    }
+  }, k.label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 34,
+      fontWeight: 900,
+      color: k.color,
+      lineHeight: 1
+    }
+  }, /*#__PURE__*/React.createElement(AnimNum, {
+    v: k.val,
+    suffix: k.suffix
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginTop: 6
+    }
+  }, k.desc)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1.5fr 1fr",
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "20px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 18
+    }
+  }, "Risco por Area"), data.areas.map((a, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: C.text,
+      fontWeight: 500
+    }
+  }, a.nome), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Pill, {
+    nivel: a.nivel
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: NV[a.nivel]?.color
+    }
+  }, a.risco))), /*#__PURE__*/React.createElement(Bar, {
+    val: a.risco,
+    n: a.nivel
+  })))), /*#__PURE__*/React.createElement(Card, {
+    accent: C.purple,
+    style: {
+      padding: "20px 24px",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: "100%",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "Radar HSP")), data.dimensoes.length > 0 ? /*#__PURE__*/React.createElement(Radar, {
+    dims: data.dimensoes
+  }) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textMute,
+      margin: "auto"
+    }
+  }, "Sem dados"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement(Card, {
+    accent: C.red,
+    style: {
+      padding: "20px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 16
+    }
+  }, "Ocorrencias Ativas"), data.denuncias.filter(d => d.status !== "resolvido" && d.status !== "concluida").slice(0, 3).map((d, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      padding: "11px 14px",
+      borderRadius: 10,
+      marginBottom: 8,
+      background: "rgba(0,0,0,0.2)",
+      border: "1px solid " + C.border
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      marginBottom: 2
+    }
+  }, /*#__PURE__*/React.createElement(Dot, {
+    status: statusReal(d)
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.text,
+      fontWeight: 600
+    }
+  }, d.cat)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      paddingLeft: 13
+    }
+  }, d.area, " - ", d.data))), data.denuncias.filter(d => d.status !== "resolvido" && d.status !== "concluida").length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textMute,
+      textAlign: "center",
+      padding: "20px 0"
+    }
+  }, "Nenhuma ocorrencia ativa")), /*#__PURE__*/React.createElement(Card, {
+    accent: C.purple,
+    style: {
+      padding: "20px 24px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 16
+    }
+  }, "Plano 30/60/90 Dias"), data.planos.slice(0, 5).map((p, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      padding: "9px 12px",
+      borderRadius: 10,
+      marginBottom: 7,
+      background: "rgba(0,0,0,0.2)",
+      border: "1px solid " + C.border,
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Tag, {
+    prazo: p.prazo
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.text,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, p.titulo)), /*#__PURE__*/React.createElement(Dot, {
+    status: p.status
+  }))), data.planos.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textMute,
+      textAlign: "center",
+      padding: "20px 0"
+    }
+  }, "Nenhuma acao cadastrada")))));
+}
+function HSP({
+  data,
+  navigate
+}) {
+  if (!data.dimensoes || data.dimensoes.length === 0) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "24px 28px",
+        animation: "fadeIn .3s ease"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("h1", {
+      style: {
+        fontSize: 22,
+        fontWeight: 900,
+        color: C.text,
+        margin: 0
+      }
+    }, "Health Score Psicossocial")), /*#__PURE__*/React.createElement(Card, {
+      style: {
+        padding: "48px 32px",
+        textAlign: "center"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 48,
+        marginBottom: 12
+      }
+    }, "🧠"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        fontWeight: 700,
+        color: C.text,
+        marginBottom: 8
+      }
+    }, "Diagnostico nao gerado"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: C.textSub,
+        marginBottom: 24,
+        lineHeight: 1.6
+      }
+    }, "Gere o Dashboard para ver o Health Score."), /*#__PURE__*/React.createElement(Btn, {
+      variant: "ghost",
+      onClick: () => navigate("dashboard")
+    }, "Ir para Dashboard")));
+  }
+  const det = data.hsp_detalhe || {};
+  const faixa = det.faixa || (data.indiceHSP >= 85 ? "referencia" : data.indiceHSP >= 70 ? "adequado" : data.indiceHSP >= 55 ? "atencao" : data.indiceHSP >= 40 ? "alerta" : "critico");
+  const faixaLabels = {
+    referencia: "REFERÊNCIA",
+    adequado: "ADEQUADO",
+    atencao: "ATENÇÃO",
+    alerta: "ALERTA",
+    critico: "CRÍTICO"
+  };
+  const corFaixa = NV[faixa]?.color || C.purple;
+  const subIndices = [{
+    nome: "HSP-N",
+    full: "Normative Score",
+    valor: det.HSP_N || 0,
+    desc: "Conformidade legal (Form A)",
+    peso: "35%",
+    color: C.gold
+  }, {
+    nome: "HSP-P",
+    full: "People Score",
+    valor: det.HSP_P || 0,
+    desc: "Experiência real (Form B)",
+    peso: "40%",
+    color: C.purple
+  }, {
+    nome: "HSP-G",
+    full: "Gap Score",
+    valor: det.HSP_G || 0,
+    desc: "Alinhamento gestão × realidade",
+    peso: "25%",
+    color: C.teal
+  }];
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      animation: "fadeIn .3s ease",
+      display: "flex",
+      flexDirection: "column",
+      gap: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      flexWrap: "wrap",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 4
+    }
+  }, "Health & Safety Performance Index"), /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "HSP Score")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "8px 18px",
+      borderRadius: 20,
+      fontSize: 12,
+      fontWeight: 800,
+      background: NV[faixa]?.bg,
+      color: corFaixa,
+      border: "1px solid " + corFaixa + "55",
+      letterSpacing: 1.5
+    }
+  }, faixaLabels[faixa])), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 2fr",
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement(Card, {
+    accent: corFaixa,
+    style: {
+      padding: "24px",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      textTransform: "uppercase",
+      letterSpacing: 2,
+      marginBottom: 8
+    }
+  }, "HSP Final"), /*#__PURE__*/React.createElement(Gauge, {
+    val: data.indiceHSP || 0,
+    color: corFaixa,
+    size: 140,
+    label: ""
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textSub,
+      marginTop: 8,
+      textAlign: "center",
+      lineHeight: 1.5
+    }
+  }, "(HSP-N×0,35) + (HSP-P×0,40) + (HSP-G×0,25)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: 12
+    }
+  }, subIndices.map((si, i) => {
+    const sFaixa = si.valor >= 85 ? "referencia" : si.valor >= 70 ? "adequado" : si.valor >= 55 ? "atencao" : si.valor >= 40 ? "alerta" : "critico";
+    return /*#__PURE__*/React.createElement(Card, {
+      key: i,
+      accent: si.color,
+      style: {
+        padding: "18px 16px",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "space-between"
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        fontWeight: 900,
+        color: si.color,
+        letterSpacing: 1
+      }
+    }, si.nome), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        color: C.textMute,
+        background: "rgba(0,0,0,0.3)",
+        padding: "2px 6px",
+        borderRadius: 6
+      }
+    }, "peso ", si.peso)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textMute,
+        marginBottom: 10
+      }
+    }, si.full), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 32,
+        fontWeight: 900,
+        color: si.color,
+        lineHeight: 1
+      }
+    }, si.valor, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        color: C.textMute
+      }
+    }, "/100")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: NV[sFaixa]?.color,
+        fontWeight: 700,
+        letterSpacing: 1,
+        marginTop: 4
+      }
+    }, faixaLabels[sFaixa])), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textSub,
+        marginTop: 10,
+        lineHeight: 1.5
+      }
+    }, si.desc));
+  }))), det.dimsA && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "22px 26px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "HSP-N — Detalhamento Normativo"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      marginTop: 2
+    }
+  }, "7 dimensões agrupadas em 3 blocos legais · Form A: ", det.formA_respostas, " respostas")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 24,
+      fontWeight: 900,
+      color: C.gold
+    }
+  }, det.HSP_N, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.textMute
+    }
+  }, "/100"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3,1fr)",
+      gap: 12,
+      marginBottom: 18
+    }
+  }, [{
+    nome: "Bloco Legal",
+    val: det.dimsA.BlocoLegal,
+    peso: "50%",
+    info: "D1 + D3"
+  }, {
+    nome: "Bloco Operacional",
+    val: det.dimsA.BlocoOperacional,
+    peso: "30%",
+    info: "D4 + D5"
+  }, {
+    nome: "Bloco Emergente",
+    val: det.dimsA.BlocoEmergente,
+    peso: "20%",
+    info: "D2 + D6 + D7"
+  }].map((b, i) => {
+    const n = b.val >= 75 ? "adequado" : b.val >= 55 ? "atencao" : b.val >= 35 ? "alerta" : "critico";
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        background: "rgba(0,0,0,0.2)",
+        borderRadius: 10,
+        padding: "12px 14px",
+        border: "1px solid " + NV[n].color + "33"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.text,
+        fontWeight: 600
+      }
+    }, b.nome), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        color: C.textMute
+      }
+    }, "peso ", b.peso)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.textMute,
+        marginBottom: 6
+      }
+    }, b.info), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 20,
+        fontWeight: 900,
+        color: NV[n].color
+      }
+    }, b.val, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: C.textMute
+      }
+    }, "/100")));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: 1.5
+    }
+  }, "Dimensões D1–D7"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+      gap: 8
+    }
+  }, [{
+    k: "D1",
+    nome: "PGR / Documental",
+    val: det.dimsA.D1
+  }, {
+    k: "D2",
+    nome: "Treinamento",
+    val: det.dimsA.D2
+  }, {
+    k: "D3",
+    nome: "Riscos Psicossociais",
+    val: det.dimsA.D3
+  }, {
+    k: "D4",
+    nome: "Maturidade / Execução",
+    val: det.dimsA.D4
+  }, {
+    k: "D5",
+    nome: "Operacional",
+    val: det.dimsA.D5
+  }, {
+    k: "D6",
+    nome: "Terceiros",
+    val: det.dimsA.D6
+  }, {
+    k: "D7",
+    nome: "Emergências",
+    val: det.dimsA.D7
+  }].map((d, i) => {
+    const n = d.val >= 75 ? "adequado" : d.val >= 55 ? "atencao" : d.val >= 35 ? "alerta" : "critico";
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        padding: "8px 10px",
+        borderRadius: 8,
+        background: "rgba(0,0,0,0.15)"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.text
+      }
+    }, /*#__PURE__*/React.createElement("strong", {
+      style: {
+        color: NV[n].color
+      }
+    }, d.k), " · ", d.nome), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: NV[n].color
+      }
+    }, d.val)), /*#__PURE__*/React.createElement(Bar, {
+      val: d.val,
+      n: n
+    }));
+  }))), det.dimsB && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "22px 26px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "HSP-P — Detalhamento da Experiência"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      marginTop: 2
+    }
+  }, "4 dimensões em 2 blocos funcionais · Form B: ", det.formB_respostas, " respostas")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 24,
+      fontWeight: 900,
+      color: C.purple
+    }
+  }, det.HSP_P, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.textMute
+    }
+  }, "/100"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 12,
+      marginBottom: 18
+    }
+  }, [{
+    nome: "Bloco Relacional",
+    val: det.dimsB.BlocoRelacional,
+    peso: "60%",
+    info: "B2 (Liderança) + B3 (Bem-Estar)"
+  }, {
+    nome: "Bloco Estrutural",
+    val: det.dimsB.BlocoEstrutural,
+    peso: "40%",
+    info: "B1 (Carga) + B4 (Comunicação)"
+  }].map((b, i) => {
+    const n = b.val >= 75 ? "adequado" : b.val >= 55 ? "atencao" : b.val >= 35 ? "alerta" : "critico";
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        background: "rgba(0,0,0,0.2)",
+        borderRadius: 10,
+        padding: "14px 16px",
+        border: "1px solid " + NV[n].color + "33"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        marginBottom: 4
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: C.text,
+        fontWeight: 600
+      }
+    }, b.nome), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        color: C.textMute
+      }
+    }, "peso ", b.peso)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: C.textMute,
+        marginBottom: 8
+      }
+    }, b.info), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 24,
+        fontWeight: 900,
+        color: NV[n].color
+      }
+    }, b.val, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.textMute
+      }
+    }, "/100")));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(2,1fr)",
+      gap: 8
+    }
+  }, [{
+    k: "B1",
+    nome: "Carga de Trabalho",
+    val: det.dimsB.B1
+  }, {
+    k: "B2",
+    nome: "Liderança",
+    val: det.dimsB.B2
+  }, {
+    k: "B3",
+    nome: "Saúde Mental / Bem-Estar",
+    val: det.dimsB.B3
+  }, {
+    k: "B4",
+    nome: "Comunicação",
+    val: det.dimsB.B4
+  }].map((d, i) => {
+    const n = d.val >= 75 ? "adequado" : d.val >= 55 ? "atencao" : d.val >= 35 ? "alerta" : "critico";
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        padding: "10px 12px",
+        borderRadius: 8,
+        background: "rgba(0,0,0,0.15)"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 5
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.text
+      }
+    }, /*#__PURE__*/React.createElement("strong", {
+      style: {
+        color: NV[n].color
+      }
+    }, d.k), " · ", d.nome), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: NV[n].color
+      }
+    }, d.val)), /*#__PURE__*/React.createElement(Bar, {
+      val: d.val,
+      n: n
+    }));
+  }))), det.dimsG && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "22px 26px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "HSP-G — Gap Score (Alinhamento A × B)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      marginTop: 2
+    }
+  }, "Quanto maior o gap, maior o risco de o PGR não refletir a realidade")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 24,
+      fontWeight: 900,
+      color: C.teal
+    }
+  }, det.HSP_G, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.textMute
+    }
+  }, "/100"))), det.dimsG.gaps && det.dimsG.gaps.length > 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, det.dimsG.gaps.map((g, i) => {
+    const fator = g.gap <= 10 ? "sem penalidade" : g.gap <= 20 ? "penalidade moderada" : "penalidade severa";
+    const corG = g.gap <= 10 ? C.green : g.gap <= 20 ? C.orange : C.red;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "10px 14px",
+        borderRadius: 8,
+        background: "rgba(0,0,0,0.2)",
+        border: "1px solid " + corG + "33"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.text,
+        fontWeight: 500
+      }
+    }, g.par), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 12,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        color: C.textMute
+      }
+    }, fator), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        fontWeight: 800,
+        color: corG
+      }
+    }, g.gap.toFixed(1), " pts")));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      padding: "10px 14px",
+      background: C.teal + "0A",
+      borderLeft: "3px solid " + C.teal,
+      borderRadius: "0 8px 8px 0",
+      fontSize: 11,
+      color: C.textSub,
+      lineHeight: 1.6
+    }
+  }, "Gap ponderado: ", /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: C.teal
+    }
+  }, det.dimsG.gapPonderado, " pts"), ". ", det.dimsG.gapPonderado <= 10 ? "Alinhamento saudável entre gestão e colaboradores." : det.dimsG.gapPonderado <= 20 ? "Divergência moderada — vale investigar as fontes da diferença." : "Divergência severa — a gestão pode estar com leitura desconectada da realidade vivida pelos colaboradores.")) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "12px",
+      borderRadius: 8,
+      background: "rgba(0,0,0,0.15)",
+      fontSize: 11,
+      color: C.textMute,
+      textAlign: "center"
+    }
+  }, det.dimsG.observacao || "Aguardando respostas de ambos os formulários para calcular o gap.")), data.areas && data.areas.length > 0 && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "22px 26px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 16
+    }
+  }, "Risco por Área / Departamento"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))",
+      gap: 10,
+      marginBottom: 16
+    }
+  }, ["critico", "alerta", "atencao", "adequado", "referencia"].map((n, i) => {
+    const ct = data.areas.filter(a => a.nivel === n).length;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        padding: "10px 12px",
+        borderRadius: 8,
+        background: NV[n].bg,
+        border: "1px solid " + NV[n].color + "33"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 22,
+        fontWeight: 900,
+        color: NV[n].color
+      }
+    }, ct), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        fontWeight: 700,
+        color: NV[n].color
+      }
+    }, NV[n].label));
+  })), data.areas.map((a, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.text
+    }
+  }, a.nome), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Pill, {
+    nivel: a.nivel
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: NV[a.nivel]?.color
+    }
+  }, a.risco))), /*#__PURE__*/React.createElement(Bar, {
+    val: a.risco,
+    n: a.nivel
+  })))), /*#__PURE__*/React.createElement(Card, {
+    accent: C.purple,
+    style: {
+      padding: "22px 26px",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 12,
+      alignSelf: "flex-start"
+    }
+  }, "Radar Integrado das Dimensões"), /*#__PURE__*/React.createElement(Radar, {
+    dims: data.dimensoes
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 20,
+      display: "flex",
+      gap: 24,
+      flexWrap: "wrap",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Gauge, {
+    val: data.indiceExplore,
+    color: C.gold,
+    size: 80,
+    label: "Explore"
+  }), /*#__PURE__*/React.createElement(Gauge, {
+    val: data.indiceHSP,
+    color: C.purple,
+    size: 80,
+    label: "HSP"
+  }), det.HSP_N > 0 && /*#__PURE__*/React.createElement(Gauge, {
+    val: det.HSP_N,
+    color: C.gold,
+    size: 70,
+    label: "HSP-N"
+  }), det.HSP_P > 0 && /*#__PURE__*/React.createElement(Gauge, {
+    val: det.HSP_P,
+    color: C.purple,
+    size: 70,
+    label: "HSP-P"
+  }), det.HSP_G > 0 && /*#__PURE__*/React.createElement(Gauge, {
+    val: det.HSP_G,
+    color: C.teal,
+    size: 70,
+    label: "HSP-G"
+  }))));
+}
+function Denuncias({
+  data,
+  setData
+}) {
+  const [form, setForm] = useState(false);
+  const [sel, setSel] = useState(null);
+  const [nova, setNova] = useState({
+    cat: "Risco Psicossocial",
+    area: "",
+    desc: ""
+  });
+  const cats = ["Risco Psicossocial", "Assedio Moral", "Assedio Sexual", "Discriminacao", "Lideranca Inadequada", "Conflito Interpessoal", "Seguranca do Trabalho", "Etica e Conduta", "Compliance", "Outros"];
+  const areasL = data.areas && data.areas.length > 0 ? data.areas : [{
+    nome: "Geral"
+  }, {
+    nome: "Operacoes"
+  }, {
+    nome: "RH"
+  }];
+  const enviar = () => {
+    if (!nova.desc.trim()) return;
+    const num = String(data.denuncias.length + 1).padStart(3, "0");
+    const nd = {
+      id: "DEN-2025-" + num,
+      cat: nova.cat,
+      area: nova.area || areasL[0].nome,
+      data: new Date().toLocaleDateString("pt-BR"),
+      status: "aberta",
+      prioridade: "media",
+      descricao: nova.desc,
+      acoes_adotadas: ""
+    };
+    const up = {
+      ...data,
+      denuncias: [nd, ...data.denuncias]
+    };
+    setData(up);
+    sd(up);
+    setNova({
+      cat: "Risco Psicossocial",
+      area: "",
+      desc: ""
+    });
+    setForm(false);
+  };
+  const updStatus = (id, novoStatus) => {
+    const up = {
+      ...data,
+      denuncias: data.denuncias.map(d => d.id === id ? {
+        ...d,
+        status: novoStatus
+      } : d)
+    };
+    setData(up);
+    sd(up);
+    if (sel && sel.id === id) setSel(up.denuncias.find(d => d.id === id));
+  };
+  const updAcoes = (id, texto) => {
+    const up = {
+      ...data,
+      denuncias: data.denuncias.map(d => d.id === id ? {
+        ...d,
+        acoes_adotadas: texto
+      } : d)
+    };
+    setData(up);
+    sd(up);
+    if (sel && sel.id === id) setSel({
+      ...sel,
+      acoes_adotadas: texto
+    });
+  };
+  const srLabel = sr => (SC[sr] || {
+    label: sr
+  }).label;
+  const srColor = sr => (SC[sr] || {
+    color: C.red
+  }).color;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      animation: "fadeIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "Gestao de Ocorrencias")), /*#__PURE__*/React.createElement(Btn, {
+    variant: "danger",
+    onClick: () => setForm(!form)
+  }, "+ Nova Ocorrencia")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))",
+      gap: 12,
+      marginBottom: 20
+    }
+  }, [{
+    l: "Total",
+    v: data.denuncias.length,
+    c: C.textSub
+  }, {
+    l: "Abertas",
+    v: data.denuncias.filter(d => statusReal(d) === "aberta").length,
+    c: C.red
+  }, {
+    l: "Em Analise",
+    v: data.denuncias.filter(d => statusReal(d) === "em_analise").length,
+    c: C.orange
+  }, {
+    l: "Atrasadas",
+    v: data.denuncias.filter(d => statusReal(d) === "atrasado").length,
+    c: "#FF4444"
+  }, {
+    l: "Resolvidas",
+    v: data.denuncias.filter(d => statusReal(d) === "resolvido").length,
+    c: C.green
+  }].map((s, i) => /*#__PURE__*/React.createElement(Card, {
+    key: i,
+    style: {
+      padding: "14px 18px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 24,
+      fontWeight: 900,
+      color: s.c
+    }
+  }, s.v), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, s.l)))), form && /*#__PURE__*/React.createElement(Card, {
+    accent: C.red,
+    style: {
+      padding: "24px",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 12,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase"
+    }
+  }, "Categoria"), /*#__PURE__*/React.createElement(Sel, {
+    value: nova.cat,
+    onChange: e => setNova({
+      ...nova,
+      cat: e.target.value
+    })
+  }, cats.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c
+  }, c)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase"
+    }
+  }, "Area"), /*#__PURE__*/React.createElement(Sel, {
+    value: nova.area || areasL[0].nome,
+    onChange: e => setNova({
+      ...nova,
+      area: e.target.value
+    })
+  }, areasL.map(a => /*#__PURE__*/React.createElement("option", {
+    key: a.nome
+  }, a.nome))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase"
+    }
+  }, "Descricao"), /*#__PURE__*/React.createElement("textarea", {
+    rows: 4,
+    value: nova.desc,
+    onChange: e => setNova({
+      ...nova,
+      desc: e.target.value
+    }),
+    placeholder: "Descreva com detalhes...",
+    style: {
+      width: "100%",
+      background: C.bgInput,
+      border: "1px solid " + C.border,
+      borderRadius: 10,
+      padding: "10px 14px",
+      color: C.text,
+      fontSize: 12,
+      resize: "vertical",
+      boxSizing: "border-box",
+      outline: "none",
+      fontFamily: "inherit"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: () => setForm(false)
+  }, "Cancelar"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    onClick: enviar
+  }, "Registrar com Confidencialidade"))), data.denuncias.length === 0 && !form && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "40px",
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 32,
+      marginBottom: 12
+    }
+  }, "✑"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.textMute
+    }
+  }, "Nenhuma ocorrencia registrada")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, data.denuncias.map((d, i) => {
+    const sr = statusReal(d);
+    const isSel = sel?.id === d.id;
+    const bColor = sr === "atrasado" ? "#FF444444" : sr === "resolvido" ? C.green + "33" : C.border;
+    return /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        borderRadius: 14,
+        overflow: "hidden",
+        border: "1px solid " + bColor
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "14px 20px",
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        cursor: "pointer",
+        background: "rgba(0,0,0,0.2)"
+      },
+      onClick: () => setSel(isSel ? null : d)
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 40,
+        height: 40,
+        borderRadius: 10,
+        background: srColor(sr) + "18",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 16,
+        flexShrink: 0
+      }
+    }, "✑"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: C.text,
+        marginBottom: 2
+      }
+    }, d.cat), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: C.textMute
+      }
+    }, d.area, " - ", d.data)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "center"
+      }
+    }, sr === "atrasado" && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        fontWeight: 800,
+        color: "#FF4444",
+        background: "rgba(255,68,68,0.12)",
+        border: "1px solid rgba(255,68,68,0.4)",
+        padding: "2px 8px",
+        borderRadius: 10
+      }
+    }, "ATRASADO"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        fontWeight: 700,
+        padding: "3px 10px",
+        borderRadius: 10,
+        color: srColor(sr),
+        background: srColor(sr) + "18",
+        border: "1px solid " + srColor(sr) + "44"
+      }
+    }, srLabel(sr)))), isSel && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "20px",
+        background: "rgba(0,0,0,0.15)",
+        borderTop: "1px solid " + C.border
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 12,
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textMute,
+        marginBottom: 4,
+        textTransform: "uppercase"
+      }
+    }, "Protocolo"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text
+      }
+    }, d.id)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textMute,
+        marginBottom: 4,
+        textTransform: "uppercase"
+      }
+    }, "Prioridade"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: d.prioridade === "alta" ? C.red : C.orange,
+        fontWeight: 700
+      }
+    }, (d.prioridade || "media").toUpperCase()))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textMute,
+        marginBottom: 6,
+        textTransform: "uppercase"
+      }
+    }, "Descricao"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text,
+        lineHeight: 1.7,
+        background: "rgba(0,0,0,0.2)",
+        padding: "12px",
+        borderRadius: 8
+      }
+    }, d.descricao)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textMute,
+        marginBottom: 6,
+        textTransform: "uppercase"
+      }
+    }, "Acoes Adotadas no Tratamento"), /*#__PURE__*/React.createElement("textarea", {
+      rows: 3,
+      value: d.acoes_adotadas || "",
+      onChange: e => updAcoes(d.id, e.target.value),
+      placeholder: "Descreva as acoes tomadas para tratamento desta ocorrencia...",
+      style: {
+        width: "100%",
+        background: C.bgInput,
+        border: "1px solid " + C.border,
+        borderRadius: 10,
+        padding: "10px 14px",
+        color: C.text,
+        fontSize: 12,
+        resize: "vertical",
+        boxSizing: "border-box",
+        outline: "none",
+        fontFamily: "inherit"
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 10,
+        flexWrap: "wrap",
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.textMute
+      }
+    }, "Alterar status:"), sr !== "em_analise" && sr !== "atrasado" && /*#__PURE__*/React.createElement("button", {
+      onClick: () => updStatus(d.id, "em_analise"),
+      style: {
+        padding: "6px 14px",
+        borderRadius: 8,
+        border: "1px solid " + C.orange + "55",
+        background: C.orange + "12",
+        color: C.orange,
+        fontSize: 11,
+        cursor: "pointer",
+        fontWeight: 600
+      }
+    }, "Em Analise"), sr !== "resolvido" && /*#__PURE__*/React.createElement("button", {
+      onClick: () => updStatus(d.id, "resolvido"),
+      style: {
+        padding: "6px 14px",
+        borderRadius: 8,
+        border: "1px solid " + C.green + "55",
+        background: C.green + "12",
+        color: C.green,
+        fontSize: 11,
+        cursor: "pointer",
+        fontWeight: 600
+      }
+    }, "Resolvido"), (sr === "em_analise" || sr === "atrasado") && /*#__PURE__*/React.createElement("button", {
+      onClick: () => updStatus(d.id, "aberta"),
+      style: {
+        padding: "6px 14px",
+        borderRadius: 8,
+        border: "1px solid " + C.textMute + "44",
+        background: "rgba(0,0,0,0.2)",
+        color: C.textMute,
+        fontSize: 11,
+        cursor: "pointer"
+      }
+    }, "Reabrir"))));
+  })));
+}
+function Acoes({
+  data,
+  setData
+}) {
+  const [nova, setNova] = useState({
+    titulo: "",
+    resp: "",
+    prazo: "30d"
+  });
+  const [adding, setAdding] = useState(false);
+  const add = () => {
+    if (!nova.titulo) return;
+    const n = {
+      id: "PA-" + String(data.planos.length + 1).padStart(3, "0"),
+      titulo: nova.titulo,
+      resp: nova.resp,
+      prazo: nova.prazo,
+      status: "pendente",
+      prog: 0
+    };
+    const up = {
+      ...data,
+      planos: [...data.planos, n]
+    };
+    setData(up);
+    sd(up);
+    setNova({
+      titulo: "",
+      resp: "",
+      prazo: "30d"
+    });
+    setAdding(false);
+  };
+  const upStatus = (id, st) => {
+    const up = {
+      ...data,
+      planos: data.planos.map(p => p.id === id ? {
+        ...p,
+        status: st,
+        prog: st === "concluido" ? 100 : p.prog
+      } : p)
+    };
+    setData(up);
+    sd(up);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      animation: "fadeIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 4
+    }
+  }, "Roadmap Estrategico"), /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "Plano de Acao 30/60/90 Dias")), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    onClick: () => setAdding(!adding)
+  }, "+ Nova Acao")), adding && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "20px",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "2fr 1fr 1fr",
+      gap: 12,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 5,
+      textTransform: "uppercase"
+    }
+  }, "Titulo"), /*#__PURE__*/React.createElement(Inp, {
+    value: nova.titulo,
+    onChange: e => setNova({
+      ...nova,
+      titulo: e.target.value
+    }),
+    placeholder: "Ex: Treinamento NR-1"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 5,
+      textTransform: "uppercase"
+    }
+  }, "Responsavel"), /*#__PURE__*/React.createElement(Inp, {
+    value: nova.resp,
+    onChange: e => setNova({
+      ...nova,
+      resp: e.target.value
+    }),
+    placeholder: "Nome"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 5,
+      textTransform: "uppercase"
+    }
+  }, "Prazo"), /*#__PURE__*/React.createElement(Sel, {
+    value: nova.prazo,
+    onChange: e => setNova({
+      ...nova,
+      prazo: e.target.value
+    })
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "30d"
+  }, "30 dias"), /*#__PURE__*/React.createElement("option", {
+    value: "60d"
+  }, "60 dias"), /*#__PURE__*/React.createElement("option", {
+    value: "90d"
+  }, "90 dias")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: () => setAdding(false)
+  }, "Cancelar"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    onClick: add
+  }, "Adicionar"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+      gap: 16
+    }
+  }, ["30d", "60d", "90d"].map(prazo => {
+    const cc = {
+      ["30d"]: C.red,
+      ["60d"]: C.orange,
+      ["90d"]: C.purple
+    }[prazo];
+    const lb = {
+      ["30d"]: "Urgente",
+      ["60d"]: "Importante",
+      ["90d"]: "Estrategico"
+    }[prazo];
+    const lista = data.planos.filter(p => p.prazo === prazo);
+    return /*#__PURE__*/React.createElement("div", {
+      key: prazo,
+      style: {
+        background: "rgba(0,0,0,0.15)",
+        border: "1px solid " + cc + "22",
+        borderRadius: 16,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "14px 18px",
+        background: cc + "12",
+        borderBottom: "1px solid " + cc + "22",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 22,
+        fontWeight: 900,
+        color: cc
+      }
+    }, prazo.replace("d", "")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: cc,
+        textTransform: "uppercase",
+        letterSpacing: 1.5
+      }
+    }, "Dias — ", lb)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 20,
+        fontWeight: 900,
+        color: cc + "88"
+      }
+    }, lista.filter(p => p.status !== "concluido").length)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "14px"
+      }
+    }, lista.map((p, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        padding: "12px",
+        borderRadius: 10,
+        marginBottom: 9,
+        background: "rgba(0,0,0,0.2)",
+        border: "1px solid " + C.border
+      }
+    }, p.origem === "diagnostico" && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 8,
+        fontWeight: 800,
+        color: C.teal,
+        letterSpacing: 1,
+        marginBottom: 4,
+        textTransform: "uppercase"
+      }
+    }, "Diagnostico NR-1"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text,
+        fontWeight: 600,
+        marginBottom: 6,
+        lineHeight: 1.4
+      }
+    }, p.titulo), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: C.textMute
+      }
+    }, p.resp), /*#__PURE__*/React.createElement(Dot, {
+      status: p.status
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6
+      }
+    }, p.status === "pendente" && /*#__PURE__*/React.createElement("button", {
+      onClick: () => upStatus(p.id, "em_curso"),
+      style: {
+        flex: 1,
+        padding: "5px",
+        borderRadius: 7,
+        border: "1px solid " + C.orange + "44",
+        background: C.orange + "11",
+        color: C.orange,
+        fontSize: 10,
+        cursor: "pointer"
+      }
+    }, "Iniciar"), p.status === "em_curso" && /*#__PURE__*/React.createElement("button", {
+      onClick: () => upStatus(p.id, "concluido"),
+      style: {
+        flex: 1,
+        padding: "5px",
+        borderRadius: 7,
+        border: "1px solid " + C.green + "44",
+        background: C.green + "11",
+        color: C.green,
+        fontSize: 10,
+        cursor: "pointer"
+      }
+    }, "Concluir"), p.status === "concluido" && /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        padding: "5px",
+        borderRadius: 7,
+        background: C.green + "11",
+        color: C.green,
+        fontSize: 10,
+        textAlign: "center"
+      }
+    }, "Concluido")))), lista.length === 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: C.textMute,
+        textAlign: "center",
+        padding: "20px 0"
+      }
+    }, "Nenhuma acao")));
+  })));
+}
+function IA({
+  data
+}) {
+  const iaCtx = data.ia_contexto || localStorage.getItem("explore_ia_ctx") || "";
+  const [msgs, setMsgs] = useState([{
+    role: "assistant",
+    text: "Ola! Sou a IA Organizacional da Oriente Compliance, especializada em NR-1, riscos psicossociais e gestao organizacional. Como posso ajudar?"
+  }]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const endRef = useRef(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({
+      behavior: "smooth"
+    });
+  }, [msgs]);
+  const send = async () => {
+    if (!input.trim() || loading) return;
+    const q = input;
+    setInput("");
+    setLoading(true);
+    setMsgs(prev => [...prev, {
+      role: "user",
+      text: q
+    }]);
+    const sys = "Voce e a IA Organizacional da Oriente Compliance. Empresa: " + (data.empresa?.nome || "N/I") + " (" + (data.empresa?.colaboradores || 0) + " colaboradores). Indice Explore: " + data.indiceExplore + "/100. Indice HSP: " + data.indiceHSP + "/100. Area critica: " + ((data.areas || [])[0]?.nome || "N/A") + ". Ocorrencias abertas: " + data.denuncias.filter(d => d.status !== "resolvido" && d.status !== "concluida").length + "." + (iaCtx ? "\n\nContexto:\n" + iaCtx : "") + " Responda de forma tecnica, executiva e concisa (max 3 paragrafos). Fundamente na NR-1 e legislacao quando relevante.";
+    const hist = msgs.filter((_, i) => i > 0).slice(-8).map(m => ({
+      role: m.role,
+      content: m.text
+    }));
+    const payload = [{
+      role: "system",
+      content: sys
+    }, ...hist, {
+      role: "user",
+      content: q
+    }];
+    let txt = "";
+    let ultimoErro = "";
+
+    // 1a tentativa: Gemini (1500/dia gratuitas) — converte historico multi-turno para o formato Gemini
+    if (GEMINI_KEY && GEMINI_KEY !== "SUA_CHAVE_GEMINI_AQUI") {
+      try {
+        const contents = [...hist.map(h => ({
+          role: h.role === "assistant" ? "model" : "user",
+          parts: [{ text: h.content }]
+        })), {
+          role: "user",
+          parts: [{ text: q }]
+        }];
+        const r = await fetch(GEMINI_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_KEY
+          },
+          body: JSON.stringify({
+            contents,
+            systemInstruction: { parts: [{ text: sys }] },
+            generationConfig: { maxOutputTokens: 1200 }
+          })
+        });
+        if (r.ok) {
+          const d = await r.json();
+          txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        } else if (r.status === 429) {
+          ultimoErro = "Limite gratuito do Gemini atingido por agora.";
+        }
+      } catch (e) {}
+    }
+
+    // 2a tentativa: OpenRouter (fallback, 50/dia gratuitas)
+    if (!txt) {
+      const modelos = await getModelosFree();
+      for (const m of modelos) {
+        try {
+          const r = await fetch(OR_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + OR_KEY,
+              "HTTP-Referer": "https://orientesolucoes.com.br",
+              "X-Title": "Oriente Compliance"
+            },
+            body: JSON.stringify({
+              model: m,
+              messages: payload,
+              max_tokens: 1200
+            })
+          });
+          if (r.ok) {
+            const d = await r.json();
+            txt = d?.choices?.[0]?.message?.content || "";
+            if (txt) break;
+          } else {
+            if (r.status === 401) { ultimoErro = "Chave de API invalida ou revogada."; break; }
+            else if (r.status === 402) { ultimoErro = "Sem credito disponivel na conta OpenRouter."; break; }
+            else if (r.status === 429) {
+              const retryAfter = r.headers.get("Retry-After");
+              ultimoErro = "Limite de uso gratuito atingido." + (retryAfter ? " Aguarde " + retryAfter + "s e tente de novo." : " Aguarde alguns minutos.");
+              break;
+            }
+            else ultimoErro = "Erro HTTP " + r.status + ".";
+          }
+        } catch (e) {
+          ultimoErro = "Erro de rede: " + (e?.message || "desconhecido");
+        }
+      }
+    }
+    if (!txt) txt = "❌ " + (ultimoErro || "Servico de IA indisponivel. Tente novamente em alguns instantes.");
+    setMsgs(prev => [...prev, {
+      role: "assistant",
+      text: txt
+    }]);
+    setLoading(false);
+  };
+  const atalhos = [{
+    l: "Detectar Padroes",
+    q: "Detecte padroes recorrentes nos riscos e ocorrencias identificadas."
+  }, {
+    l: "Parecer NR-1",
+    q: "Gere um parecer tecnico sobre a conformidade NR-1 da empresa."
+  }, {
+    l: "Acoes Prioritarias",
+    q: "Quais as acoes mais urgentes para reduzir os riscos psicossociais criticos?"
+  }, {
+    l: "Risco Juridico",
+    q: "Avalie o risco juridico atual em relacao a NR-1 e CLT."
+  }];
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      display: "flex",
+      flexDirection: "column",
+      height: "calc(100vh - 20px)",
+      animation: "fadeIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "IA Organizacional")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))",
+      gap: 10,
+      marginBottom: 16
+    }
+  }, atalhos.map((a, i) => /*#__PURE__*/React.createElement("button", {
+    key: i,
+    onClick: () => setInput(a.q),
+    style: {
+      padding: "12px 14px",
+      borderRadius: 12,
+      border: "1px solid " + C.purple + "33",
+      background: C.purple + "0E",
+      color: C.purple,
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      textAlign: "left",
+      lineHeight: 1.4
+    }
+  }, a.l))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      overflow: "auto",
+      background: "rgba(0,0,0,0.2)",
+      border: "1px solid " + C.border,
+      borderRadius: 16,
+      padding: "20px",
+      marginBottom: 14,
+      display: "flex",
+      flexDirection: "column",
+      gap: 16
+    }
+  }, msgs.map((m, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: "50%",
+      flexShrink: 0,
+      background: m.role === "assistant" ? "linear-gradient(135deg,#6E1E3A,#9B7EFF)" : "rgba(255,255,255,0.1)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 13,
+      color: "#fff",
+      fontWeight: 700
+    }
+  }, m.role === "assistant" ? "*" : "A"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      background: m.role === "assistant" ? C.purple + "0C" : "rgba(255,255,255,0.04)",
+      border: "1px solid " + (m.role === "assistant" ? C.purple + "22" : C.border),
+      borderRadius: "4px 12px 12px 12px",
+      padding: "12px 16px",
+      fontSize: 12,
+      color: C.text,
+      lineHeight: 1.75,
+      whiteSpace: "pre-wrap"
+    }
+  }, m.text))), loading && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: "50%",
+      background: "linear-gradient(135deg,#6E1E3A,#9B7EFF)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "#fff",
+      fontSize: 13
+    }
+  }, "*"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      padding: "12px 16px",
+      background: C.purple + "0C",
+      border: "1px solid " + C.purple + "22",
+      borderRadius: "4px 12px 12px 12px"
+    }
+  }, [0, 1, 2].map(j => /*#__PURE__*/React.createElement("div", {
+    key: j,
+    style: {
+      width: 7,
+      height: 7,
+      borderRadius: "50%",
+      background: C.purple,
+      animation: "blink 1s " + j * 0.2 + "s infinite"
+    }
+  })))), /*#__PURE__*/React.createElement("div", {
+    ref: endRef
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: input,
+    onChange: e => setInput(e.target.value),
+    onKeyDown: e => e.key === "Enter" && send(),
+    placeholder: "Pergunte sobre riscos, NR-1, compliance, saude organizacional...",
+    style: {
+      flex: 1,
+      background: C.bgInput,
+      border: "1px solid " + C.border,
+      borderRadius: 12,
+      padding: "12px 16px",
+      color: C.text,
+      fontSize: 12,
+      outline: "none",
+      fontFamily: "inherit"
+    }
+  }), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    onClick: send,
+    disabled: loading
+  }, loading ? "..." : "Enviar")));
+}
+function Relatorios({
+  data
+}) {
+  const [gerando, setGerando] = useState(null);
+  const abrir = async (titulo, fn) => {
+    setGerando(titulo);
+    const html = await fn(data, null);
+    setGerando(null);
+    const w = window.open("", "_blank", "width=950,height=750");
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+    }
+  };
+  const tipos = [{
+    icon: "&#128203;",
+    color: C.gold,
+    title: "Relatorio NR-1",
+    tag: "Compliance",
+    desc: "Analise tecnica completa fundamentada na Portaria MTE n.1.419/2024. Elemento probatorio para fiscalizacao.",
+    fn: gerarRelNR1
+  }, {
+    icon: "&#9678;",
+    color: C.purple,
+    title: "Parecer Executivo",
+    tag: "Executivo",
+    desc: "Sintese estrategica para gestores com analise situacional, riscos, recomendacoes e plano de acao.",
+    fn: gerarParecerExec
+  }, {
+    icon: "&#128269;",
+    color: C.orange,
+    title: "Auditoria Interna",
+    tag: "Big 4",
+    desc: "Relatorio no padrao Ernst Young / KPMG / Deloitte. Achados, recomendacoes e trilha de evidencias.",
+    fn: gerarAuditoria
+  }, {
+    icon: "&#129504;",
+    color: C.green,
+    title: "Saude Organizacional",
+    tag: "SST / CLT",
+    desc: "Analise tecnica em saude ocupacional. Fundamentada na CLT, NR-1 e Portaria MTE 1.419/2024.",
+    fn: gerarSaudeOrg
+  }, {
+    icon: "&#10001;",
+    color: C.red,
+    title: "Canal de Ocorrencias",
+    tag: "Canal",
+    desc: "Consolidado das ocorrencias com SLAs, analise de padroes e proposicoes praticas de acoes corretivas.",
+    fn: gerarCanalDen
+  }, {
+    icon: "&#10022;",
+    color: C.teal,
+    title: "Relatorio de IA",
+    tag: "Insights",
+    desc: "Insights, padroes ocultos, correlacoes e acoes inovadoras geradas por inteligencia artificial.",
+    fn: gerarRelIA
+  }];
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      animation: "fadeIn .3s ease"
+    }
+  }, gerando && /*#__PURE__*/React.createElement(ModalGerandoPDF, {
+    tipo: gerando
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute,
+      letterSpacing: 2,
+      textTransform: "uppercase",
+      marginBottom: 4
+    }
+  }, "Central de"), /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "Relatorios e Documentos")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.gold + "0A",
+      border: "1px solid " + C.gold + "33",
+      borderRadius: 12,
+      padding: "12px 16px",
+      marginBottom: 20,
+      fontSize: 12,
+      color: C.textSub,
+      lineHeight: 1.7
+    }
+  }, "Todos os relatorios sao gerados pela IA com base nos dados do diagnostico. Disponivel nos planos PRO e Enterprise."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
+      gap: 14
+    }
+  }, tipos.map((r, i) => /*#__PURE__*/React.createElement(Card, {
+    key: i,
+    style: {
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 44,
+      height: 44,
+      borderRadius: 12,
+      background: r.color + "18",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 22
+    },
+    dangerouslySetInnerHTML: {
+      __html: r.icon
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      padding: "3px 9px",
+      borderRadius: 10,
+      color: r.color,
+      background: r.color + "18",
+      border: "1px solid " + r.color + "33",
+      alignSelf: "flex-start"
+    }
+  }, r.tag)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 6
+    }
+  }, r.title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textSub,
+      lineHeight: 1.5,
+      marginBottom: 16
+    }
+  }, r.desc), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    style: {
+      width: "100%",
+      borderColor: r.color + "44",
+      color: r.color,
+      background: r.color + "0A"
+    },
+    onClick: () => abrir(r.title, r.fn),
+    disabled: gerando !== null
+  }, gerando === r.title ? "Gerando..." : "Gerar Relatorio")))));
+}
+function Suporte({
+  usuario
+}) {
+  const pro = isPro(usuario);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      animation: "fadeIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "Suporte")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "28px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 28,
+      marginBottom: 12
+    }
+  }, "✉"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "E-mail"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textSub,
+      lineHeight: 1.7,
+      marginBottom: 20
+    }
+  }, "Resposta em ate ", pro ? "4h" : "2 dias", " uteis."), /*#__PURE__*/React.createElement("a", {
+    href: "mailto:suporte@exploredesenvolvimento.com.br",
+    style: {
+      display: "block",
+      padding: "12px",
+      borderRadius: 12,
+      border: "1px solid " + C.teal + "44",
+      background: C.teal + "11",
+      color: C.teal,
+      fontSize: 12,
+      fontWeight: 700,
+      textAlign: "center",
+      textDecoration: "none"
+    }
+  }, "Enviar e-mail")), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "28px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 28,
+      marginBottom: 12
+    }
+  }, "💬"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 8
+    }
+  }, "WhatsApp"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.textSub,
+      lineHeight: 1.7,
+      marginBottom: 20
+    }
+  }, pro ? "Atendimento prioritario." : "Interesse em upgrade para PRO?"), /*#__PURE__*/React.createElement("a", {
+    href: WA_LINK,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      display: "block",
+      padding: "12px",
+      borderRadius: 12,
+      border: "1px solid " + C.green + "44",
+      background: C.green + "11",
+      color: C.green,
+      fontSize: 12,
+      fontWeight: 700,
+      textAlign: "center",
+      textDecoration: "none"
+    }
+  }, "WhatsApp"))));
+}
+function Config({
+  data,
+  setData,
+  usuario
+}) {
+  const plano = (usuario?.plano || "start").toLowerCase();
+  const lim = LIMITES[plano] || LIMITES.start;
+  const [emp, setEmp] = useState({
+    ...DD.empresa,
+    ...(data.empresa || {})
+  });
+  const [iaCtx, setIaCtx] = useState(() => localStorage.getItem("explore_ia_ctx") || data.ia_contexto || "");
+  const [iaStatus, setIaStatus] = useState(null);
+  const [appsUrl, setAppsUrl] = useState(() => localStorage.getItem("explore_apps_script") || "");
+  const [usuarios, setUsuarios] = useState(() => data.usuarios_empresa || []);
+  useEffect(() => {
+    if (data.usuarios_empresa && data.usuarios_empresa.length > 0) setUsuarios(data.usuarios_empresa);
+  }, []);
+  const [limEnt, setLimEnt] = useState(lim.users);
+  const [ok, setOk] = useState("");
+  const [modalWA, setModalWA] = useState(false);
+  const [enviados, setEnviados] = useState([]);
+  const maxUsers = plano === "enterprise" ? limEnt : lim.users;
+  useEffect(() => {
+    if (!isPro({
+      plano
+    })) {
+      setIaStatus(false);
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      // Testa Gemini primeiro
+      const gem = await geminiCall("Voce e um assistente.", "Responda apenas: ok", 5);
+      if (gem && gem.ok) {
+        if (!cancelado) setIaStatus(true);
+        return;
+      }
+      // Fallback: testa OpenRouter
+      const modelos = await getModelosFree();
+      for (const m of modelos) {
+        if (cancelado) return;
+        try {
+          const r = await fetch(OR_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + OR_KEY,
+              "HTTP-Referer": "https://orientesolucoes.com.br",
+              "X-Title": "Oriente Compliance"
+            },
+            body: JSON.stringify({
+              model: m,
+              messages: [{
+                role: "user",
+                content: "oi"
+              }],
+              max_tokens: 5
+            })
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (d?.choices?.[0]?.message?.content) {
+              if (!cancelado) setIaStatus(true);
+              return;
+            }
+          }
+        } catch (e) {}
+      }
+      if (!cancelado) setIaStatus(false);
+    })();
+    return () => { cancelado = true; };
+  }, []);
+  const uploadLogo = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      alert("Maximo 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 215;
+        canvas.height = 75;
+        canvas.getContext("2d").drawImage(img, 0, 0, 215, 75);
+        setEmp(prev => ({
+          ...prev,
+          logo: canvas.toDataURL("image/png")
+        }));
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const addUser = () => {
+    if (usuarios.length >= maxUsers) {
+      alert("Limite de " + maxUsers + " usuarios atingido.");
+      return;
+    }
+    setUsuarios(prev => [...prev, {
+      nome: "",
+      area: "",
+      email: "",
+      contato: "",
+      gestor: false
+    }]);
+  };
+  const updUser = (i, f, v) => setUsuarios(prev => prev.map((u, idx) => idx === i ? {
+    ...u,
+    [f]: v
+  } : u));
+  const delUser = i => setUsuarios(prev => prev.filter((_, idx) => idx !== i));
+  const salvar = () => {
+    localStorage.setItem("explore_ia_ctx", iaCtx);
+    localStorage.setItem("explore_apps_script", appsUrl);
+    const up = {
+      ...data,
+      empresa: {
+        ...emp,
+        plano: usuario?.plano?.toUpperCase() || "START"
+      },
+      ia_contexto: iaCtx,
+      usuarios_empresa: usuarios
+    };
+    setData(up);
+    sd(up);
+    setOk("Configuracoes salvas!");
+    setTimeout(() => setOk(""), 3000);
+    const comWA = usuarios.filter(u => u.contato && u.contato.replace(/[^0-9]/g, "").length >= 10);
+    if (comWA.length > 0 && emp.nome) setTimeout(() => setModalWA(true), 800);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px 28px",
+      animation: "fadeIn .3s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: C.text,
+      margin: 0
+    }
+  }, "Configuracoes")), ok && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(45,212,160,0.12)",
+      border: "1px solid " + C.green + "44",
+      borderRadius: 10,
+      padding: "10px 14px",
+      marginBottom: 16,
+      fontSize: 12,
+      color: C.green
+    }
+  }, "Configuracoes salvas!"), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "28px",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 20
+    }
+  }, "Dados da Empresa"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 16,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Nome da Empresa"), /*#__PURE__*/React.createElement(Inp, {
+    value: emp.nome || "",
+    onChange: e => setEmp({
+      ...emp,
+      nome: e.target.value
+    }),
+    placeholder: "Nome da empresa"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Setor"), /*#__PURE__*/React.createElement(Inp, {
+    value: emp.setor || "",
+    onChange: e => setEmp({
+      ...emp,
+      setor: e.target.value
+    }),
+    placeholder: "Ex: Tecnologia, Saude..."
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "N de Colaboradores"), /*#__PURE__*/React.createElement(Inp, {
+    type: "number",
+    value: emp.colaboradores || "",
+    min: 0,
+    onChange: e => {
+      const v = Number(e.target.value);
+      if (plano !== "enterprise" && v > lim.colab) {
+        alert("Limite: " + lim.colab + " colaboradores.");
+        return;
+      }
+      setEmp({
+        ...emp,
+        colaboradores: v
+      });
+    },
+    placeholder: "0"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Plano Contratado"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(0,0,0,0.25)",
+      border: "1px solid " + C.border,
+      borderRadius: 10,
+      padding: "10px 14px",
+      fontSize: 12,
+      color: C.textMute,
+      fontStyle: "italic"
+    }
+  }, (usuario?.plano || "start").toUpperCase()))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Logomarca (JPEG/PNG/GIF - max 2MB)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      alignItems: "center"
+    }
+  }, emp.logo ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("img", {
+    src: emp.logo,
+    style: {
+      width: 215,
+      height: 75,
+      objectFit: "contain",
+      background: "rgba(255,255,255,0.08)",
+      borderRadius: 8,
+      border: "1px solid " + C.border
+    },
+    alt: "Logo"
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEmp({
+      ...emp,
+      logo: ""
+    }),
+    style: {
+      position: "absolute",
+      top: -8,
+      right: -8,
+      width: 20,
+      height: 20,
+      borderRadius: "50%",
+      background: C.red,
+      border: "none",
+      color: "#fff",
+      fontSize: 10,
+      cursor: "pointer"
+    }
+  }, "x")) : /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      width: 215,
+      height: 75,
+      borderRadius: 8,
+      border: "2px dashed " + C.border,
+      background: "rgba(0,0,0,0.15)",
+      cursor: "pointer",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20
+    }
+  }, "🖼"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.textMute
+    }
+  }, "Clique para enviar"), /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".jpg,.jpeg,.gif,.png,.bmp",
+    onChange: uploadLogo,
+    style: {
+      display: "none"
+    }
+  }))))), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "28px",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, "IA Organizacional"), iaStatus === null ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.textMute
+    }
+  }, "Verificando...") : /*#__PURE__*/React.createElement(Led, {
+    ativo: iaStatus && isPro({
+      plano
+    }),
+    label: !isPro({
+      plano
+    }) ? "Plano START — nao disponivel" : iaStatus ? "Operacional" : "Inativo"
+  })), !isPro({
+    plano
+  }) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "rgba(255,107,122,0.08)",
+      border: "1px solid " + C.red + "22",
+      borderRadius: 10,
+      padding: "12px 14px",
+      marginBottom: 16,
+      fontSize: 12,
+      color: C.textMute
+    }
+  }, "Disponivel nos planos PRO e ENTERPRISE."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Contexto da Empresa"), /*#__PURE__*/React.createElement("textarea", {
+    rows: 5,
+    value: iaCtx,
+    onChange: e => setIaCtx(e.target.value),
+    disabled: !isPro({
+      plano
+    }),
+    placeholder: isPro({
+      plano
+    }) ? "Descreva sua empresa, riscos conhecidos, estrutura organizacional..." : "Disponivel nos planos PRO e ENTERPRISE.",
+    style: {
+      width: "100%",
+      background: isPro({
+        plano
+      }) ? C.bgInput : "rgba(0,0,0,0.15)",
+      border: "1px solid " + C.border,
+      borderRadius: 10,
+      padding: "10px 14px",
+      color: isPro({
+        plano
+      }) ? C.text : C.textMute,
+      fontSize: 12,
+      resize: "vertical",
+      boxSizing: "border-box",
+      outline: "none",
+      fontFamily: "inherit",
+      cursor: isPro({
+        plano
+      }) ? "text" : "not-allowed"
+    }
+  })), isPro({
+    plano
+  }) && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginBottom: 6,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "URL Google Apps Script"), /*#__PURE__*/React.createElement(Inp, {
+    value: appsUrl,
+    onChange: e => {
+      setAppsUrl(e.target.value);
+      localStorage.setItem("explore_apps_script", e.target.value);
+    },
+    placeholder: "https://script.google.com/macros/s/..."
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute,
+      marginTop: 4
+    }
+  }, "Le as planilhas sem torna-las publicas. Veja explore-apps-script.js."))), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: "28px",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 4
+    }
+  }, "Gerenciar Colaboradores"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.textMute
+    }
+  }, usuarios.length, " de ", plano === "enterprise" ? "ilimitado" : maxUsers)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "center"
+    }
+  }, plano === "enterprise" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.textMute
+    }
+  }, "Linhas:"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    value: limEnt,
+    onChange: e => setLimEnt(Math.max(1, Number(e.target.value))),
+    style: {
+      width: 70,
+      background: C.bgInput,
+      border: "1px solid " + C.border,
+      borderRadius: 8,
+      padding: "6px 10px",
+      color: C.text,
+      fontSize: 12,
+      outline: "none",
+      textAlign: "center"
+    }
+  })), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    style: {
+      fontSize: 11,
+      padding: "8px 14px"
+    },
+    onClick: addUser,
+    disabled: plano !== "enterprise" && usuarios.length >= maxUsers
+  }, "+ Adicionar"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: "1px solid " + C.border,
+      borderRadius: 12,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1.2fr 1fr 80px 36px",
+      padding: "10px 14px",
+      background: "rgba(0,0,0,0.3)",
+      borderBottom: "1px solid " + C.border
+    }
+  }, ["Nome", "Area", "E-mail", "Contato (WA)", "Gestor?", ""].map((h, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: C.textMute,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, h))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxHeight: 280,
+      overflowY: "auto"
+    }
+  }, usuarios.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "24px",
+      textAlign: "center",
+      fontSize: 12,
+      color: C.textMute
+    }
+  }, "Nenhum colaborador. Clique em \"+ Adicionar\"."), usuarios.map((u, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1.2fr 1fr 80px 36px",
+      padding: "8px 14px",
+      borderBottom: "1px solid " + C.border,
+      alignItems: "center",
+      background: i % 2 === 0 ? "transparent" : "rgba(0,0,0,0.1)"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: u.nome,
+    onChange: e => updUser(i, "nome", e.target.value),
+    placeholder: "Nome",
+    style: {
+      background: "transparent",
+      border: "none",
+      borderBottom: "1px solid " + C.border,
+      padding: "4px 6px",
+      color: C.text,
+      fontSize: 12,
+      outline: "none",
+      width: "95%"
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    value: u.area,
+    onChange: e => updUser(i, "area", e.target.value),
+    placeholder: "Area",
+    style: {
+      background: "transparent",
+      border: "none",
+      borderBottom: "1px solid " + C.border,
+      padding: "4px 6px",
+      color: C.text,
+      fontSize: 12,
+      outline: "none",
+      width: "95%"
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    value: u.email,
+    onChange: e => updUser(i, "email", e.target.value),
+    placeholder: "email@empresa.com",
+    type: "email",
+    style: {
+      background: "transparent",
+      border: "none",
+      borderBottom: "1px solid " + C.border,
+      padding: "4px 6px",
+      color: C.text,
+      fontSize: 12,
+      outline: "none",
+      width: "95%"
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    value: u.contato || "",
+    onChange: e => updUser(i, "contato", e.target.value),
+    placeholder: "(11)99999-9999",
+    style: {
+      background: "transparent",
+      border: "none",
+      borderBottom: "1px solid " + C.border,
+      padding: "4px 6px",
+      color: C.text,
+      fontSize: 12,
+      outline: "none",
+      width: "95%"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: u.gestor || false,
+    onChange: e => updUser(i, "gestor", e.target.checked),
+    style: {
+      width: 16,
+      height: 16,
+      cursor: "pointer",
+      accentColor: C.purple
+    }
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: () => delUser(i),
+    style: {
+      background: "transparent",
+      border: "none",
+      color: C.red,
+      cursor: "pointer",
+      fontSize: 16
+    }
+  }, "x")))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      justifyContent: "flex-end",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    style: {
+      fontSize: 12
+    },
+    onClick: () => setModalWA(true),
+    disabled: usuarios.filter(u => u.contato).length === 0
+  }, "Enviar Diagnostico NR-1"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    style: {
+      padding: "12px 32px",
+      fontSize: 13
+    },
+    onClick: salvar
+  }, "Salvar configuracoes")), modalWA && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.8)",
+      backdropFilter: "blur(6px)",
+      zIndex: 1000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "20px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "linear-gradient(145deg,#2D0E1C,#1A0510)",
+      border: "1px solid " + C.border,
+      borderRadius: 20,
+      padding: "32px",
+      maxWidth: 520,
+      width: "100%",
+      maxHeight: "80vh",
+      overflowY: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 800,
+      color: C.text
+    }
+  }, "Enviar Diagnostico NR-1"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setModalWA(false),
+    style: {
+      background: "rgba(255,255,255,0.08)",
+      border: "1px solid " + C.border,
+      borderRadius: 8,
+      padding: "6px 12px",
+      color: C.textMute,
+      cursor: "pointer"
+    }
+  }, "x")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.gold + "0A",
+      border: "1px solid " + C.gold + "33",
+      borderRadius: 10,
+      padding: "12px 14px",
+      marginBottom: 18,
+      fontSize: 12,
+      color: C.textSub,
+      lineHeight: 1.7
+    }
+  }, "Gestores recebem o Form A - Colaboradores recebem o Form B"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxHeight: 200,
+      overflowY: "auto",
+      marginBottom: 18,
+      display: "flex",
+      flexDirection: "column",
+      gap: 6
+    }
+  }, usuarios.filter(u => u.contato && u.contato.replace(/[^0-9]/g, "").length >= 10).map((u, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      padding: "9px 12px",
+      borderRadius: 8,
+      background: "rgba(0,0,0,0.2)",
+      border: "1px solid " + C.border,
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text,
+      fontWeight: 500
+    }
+  }, u.nome || "Sem nome"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.textMute
+    }
+  }, u.contato, " - ", u.gestor ? "Gestor" : "Colaborador")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, enviados.includes(i) && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: C.green
+    }
+  }, "ok"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      abrirWA(u.contato, u.nome || "Colaborador", emp.nome, u.gestor || false);
+      setEnviados(prev => [...prev, i]);
+    },
+    style: {
+      padding: "4px 10px",
+      borderRadius: 8,
+      background: (u.gestor ? C.purple : C.teal) + "18",
+      border: "1px solid " + (u.gestor ? C.purple : C.teal) + "44",
+      color: u.gestor ? C.purple : C.teal,
+      fontSize: 11,
+      cursor: "pointer"
+    }
+  }, u.gestor ? "Form A" : "Form B"))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    style: {
+      flex: 1
+    },
+    onClick: () => setModalWA(false)
+  }, "Fechar"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "primary",
+    style: {
+      flex: 2
+    },
+    onClick: async () => {
+      const lista = usuarios.filter(u => u.contato && u.contato.replace(/[^0-9]/g, "").length >= 10);
+      for (let i = 0; i < lista.length; i++) {
+        abrirWA(lista[i].contato, lista[i].nome || "Colaborador", emp.nome, lista[i].gestor || false);
+        setEnviados(prev => [...prev, i]);
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+  }, "Enviar a todos")))));
+}
+function App() {
+  const [page, setPage] = useState("landing");
+  const [data, setData] = useState(() => ld());
+  const [usuario, setUsuario] = useState(() => {
+    try {
+      const s = sessionStorage.getItem("explore_usuario");
+      return s ? JSON.parse(s) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [loginAberto, setLoginAberto] = useState(false);
+  const [trocaSenha, setTrocaSenha] = useState(false);
+  const [userTemp, setUserTemp] = useState(null);
+  const navigate = pg => {
+    if (pg === "landing") {
+      setPage("landing");
+      return;
+    }
+    if (!canAccess(pg, usuario)) {
+      setPage("landing");
+      return;
+    }
+    setPage(pg);
+  };
+  const handleLogin = user => {
+    if (!localStorage.getItem("explore_pw_" + user.email)) {
+      setUserTemp(user);
+      setLoginAberto(false);
+      setTrocaSenha(true);
+      return;
+    }
+    finalizarLogin(user);
+  };
+  const finalizarLogin = user => {
+    setUsuario(user);
+    sessionStorage.setItem("explore_usuario", JSON.stringify(user));
+    setLoginAberto(false);
+    setTrocaSenha(false);
+    setUserTemp(null);
+    if (!localStorage.getItem("explore_cfg_" + user.email)) {
+      localStorage.setItem("explore_cfg_" + user.email, "1");
+      setPage("config");
+    } else setPage("dashboard");
+  };
+  const handleLogout = () => {
+    setUsuario(null);
+    sessionStorage.removeItem("explore_usuario");
+    setPage("landing");
+  };
+  if (trocaSenha && userTemp) return /*#__PURE__*/React.createElement(AlterarSenha, {
+    usuario: userTemp,
+    onConcluido: finalizarLogin
+  });
+  const views = {
+    landing: /*#__PURE__*/React.createElement(Landing, {
+      navigate: navigate,
+      abrirLogin: () => setLoginAberto(true)
+    }),
+    dashboard: /*#__PURE__*/React.createElement(Dashboard, {
+      data: data,
+      setData: setData,
+      navigate: navigate
+    }),
+    hsp: /*#__PURE__*/React.createElement(HSP, {
+      data: data,
+      navigate: navigate
+    }),
+    denuncias: /*#__PURE__*/React.createElement(Denuncias, {
+      data: data,
+      setData: setData
+    }),
+    acoes: /*#__PURE__*/React.createElement(Acoes, {
+      data: data,
+      setData: setData
+    }),
+    ia: /*#__PURE__*/React.createElement(IA, {
+      data: data
+    }),
+    relatorios: /*#__PURE__*/React.createElement(Relatorios, {
+      data: data
+    }),
+    suporte: /*#__PURE__*/React.createElement(Suporte, {
+      usuario: usuario
+    }),
+    config: /*#__PURE__*/React.createElement(Config, {
+      data: data,
+      setData: setData,
+      usuario: usuario
+    })
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "'DM Sans','Segoe UI',sans-serif",
+      background: C.bg,
+      minHeight: "100vh",
+      color: C.text,
+      display: "flex"
+    }
+  }, loginAberto && /*#__PURE__*/React.createElement(ModalLogin, {
+    onClose: () => setLoginAberto(false),
+    onLogin: handleLogin
+  }), /*#__PURE__*/React.createElement(Sidebar, {
+    page: page,
+    navigate: navigate,
+    usuario: usuario,
+    onLogout: handleLogout,
+    data: data
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      overflow: "auto",
+      minHeight: "100vh"
+    }
+  }, views[page] || views.landing));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
+</script>
+</body>
+</html>
