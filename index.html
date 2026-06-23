@@ -39,9 +39,9 @@ const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_KEY = "";
 // IA via proxy seguro (Cloudflare Worker). A chave Gemini fica protegida no Worker,
 // nunca no codigo. Substitua pela URL do seu Worker apos o deploy.
-const IA_PROXY_URL = "https://oriente-ia.exploredev.workers.dev";
+const IA_PROXY_URL = "https://oriente-ia.SEU-SUBDOMINIO.workers.dev";
 async function geminiCall(sys, msg, maxTok) {
-  if (!IA_PROXY_URL || IA_PROXY_URL.includes("https://oriente-ia.exploredev.workers.dev")) return null;
+  if (!IA_PROXY_URL || IA_PROXY_URL.includes("SEU-SUBDOMINIO")) return null;
   try {
     const r = await fetch(IA_PROXY_URL, {
       method: "POST",
@@ -4293,12 +4293,29 @@ function IA({
     let ultimoErro = "";
 
     // 1a tentativa: IA via proxy seguro (Worker) — converte historico multi-turno para o formato Gemini
-    if (IA_PROXY_URL && !IA_PROXY_URL.includes("https://oriente-ia.exploredev.workers.dev/")) {
+    if (IA_PROXY_URL && !IA_PROXY_URL.includes("SEU-SUBDOMINIO")) {
       try {
-        const contents = [...hist.map(h => ({
+        // Gemini exige que 'contents' comece com role 'user' e alterne user/model.
+        // Remove do inicio do historico qualquer mensagem 'model' (ex: saudacao do assistente).
+        let histGemini = hist.map(h => ({
           role: h.role === "assistant" ? "model" : "user",
           parts: [{ text: h.content }]
-        })), {
+        }));
+        while (histGemini.length > 0 && histGemini[0].role === "model") {
+          histGemini.shift();
+        }
+        // Garante alternancia estrita: descarta mensagens consecutivas do mesmo papel
+        const alternado = [];
+        for (const m of histGemini) {
+          if (alternado.length === 0 || alternado[alternado.length - 1].role !== m.role) {
+            alternado.push(m);
+          }
+        }
+        // O ultimo item do historico nao pode ser 'user' (senao fica user,user com a pergunta nova)
+        while (alternado.length > 0 && alternado[alternado.length - 1].role === "user") {
+          alternado.pop();
+        }
+        const contents = [...alternado, {
           role: "user",
           parts: [{ text: q }]
         }];
