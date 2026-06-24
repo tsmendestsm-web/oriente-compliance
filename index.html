@@ -35,6 +35,8 @@ const FORM_A_LINK = "https://forms.gle/mHoDvimZFnNyEaadA";
 const FORM_B_LINK = "https://forms.gle/xL7Fmt8WTbWzgT7KA";
 const SHEET_B_CSV = "https://docs.google.com/spreadsheets/d/1SGbsAVFSBMZ0Gf1xgU6Zf17KzKYs8UcE-ZuVOD2-YAI/export?format=csv&gid=1038911872";
 const SHEET_A_CSV = "https://docs.google.com/spreadsheets/d/1Oe53M2mNjJrEDUzwhyTx1oaKnMgv6XAGl6rFJfiQTxA/export?format=csv&gid=142494832";
+// Worker proxy de planilhas (le CSV server-side, sem trava de CORS)
+const SHEETS_PROXY_URL = "https://oriente-sheets.exploredev.workers.dev";
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_KEY = "";
 // IA via proxy seguro (Cloudflare Worker). A chave Gemini fica protegida no Worker,
@@ -392,7 +394,7 @@ async function iaCall(sys, msg, maxTok) {
         headers: {
           "Content-Type": "application/json",
           "Authorization": "Bearer " + OR_KEY,
-          "HTTP-Referer": "https://orientesolucoes.com.br",
+          "HTTP-Referer": "https://orientesolucoes.com",
           "X-Title": "Oriente Compliance"
         },
         body: JSON.stringify({
@@ -552,7 +554,27 @@ async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
         };
       };
       const pxs = [u => "https://corsproxy.io/?url=" + encodeURIComponent(u), u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u), u => "https://thingproxy.freeboard.io/fetch/" + u];
+      // Extrai id e gid de uma URL de planilha Google
+      const extraiIdGid = u => {
+        const mId = u.match(/\/d\/([^/]+)/);
+        const mGid = u.match(/[?&]gid=([0-9]+)/);
+        return { id: mId ? mId[1] : "", gid: mGid ? mGid[1] : "0" };
+      };
       const buscaCSV = async url => {
+        // 1a opcao: Worker proprio (server-side, sem CORS) — confiavel
+        if (SHEETS_PROXY_URL && !SHEETS_PROXY_URL.includes("SEU-SUBDOMINIO")) {
+          try {
+            const { id, gid } = extraiIdGid(url);
+            if (id) {
+              const r = await fetch(SHEETS_PROXY_URL + "/?id=" + encodeURIComponent(id) + "&gid=" + encodeURIComponent(gid), { cache: "no-cache" });
+              if (r.ok) {
+                const t = await r.text();
+                if (t && t.length > 20 && t.indexOf("<!DOCTYPE") !== 0) return t;
+              }
+            }
+          } catch (e) {}
+        }
+        // 2a opcao: proxies publicos (fallback, podem estar instaveis)
         for (const px of pxs) {
           try {
             const r = await fetch(px(url), {
@@ -4389,7 +4411,7 @@ function IA({
             headers: {
               "Content-Type": "application/json",
               "Authorization": "Bearer " + OR_KEY,
-              "HTTP-Referer": "https://orientesolucoes.com.br",
+              "HTTP-Referer": "https://orientesolucoes.com",
               "X-Title": "Oriente Compliance"
             },
             body: JSON.stringify({
@@ -4903,7 +4925,7 @@ function Config({
             headers: {
               "Content-Type": "application/json",
               "Authorization": "Bearer " + OR_KEY,
-              "HTTP-Referer": "https://orientesolucoes.com.br",
+              "HTTP-Referer": "https://orientesolucoes.com",
               "X-Title": "Oriente Compliance"
             },
             body: JSON.stringify({
