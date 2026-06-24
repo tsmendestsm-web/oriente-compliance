@@ -39,7 +39,30 @@ const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OR_KEY = "";
 // IA via proxy seguro (Cloudflare Worker). A chave Gemini fica protegida no Worker,
 // nunca no codigo. Substitua pela URL do seu Worker apos o deploy.
-const IA_PROXY_URL = "https://oriente-ia.SEU-SUBDOMINIO.workers.dev";
+const IA_PROXY_URL = "https://oriente-ia.exploredev.workers.dev";
+// Worker de e-mail (Resend). A chave do Resend fica protegida no Worker.
+const MAIL_PROXY_URL = "https://oriente-mail.exploredev.workers.dev";
+// Dispara um e-mail transacional via Worker. Nao bloqueia a UI; falhas sao silenciosas no app.
+async function enviarEmail(tipo, dados) {
+  if (!MAIL_PROXY_URL || MAIL_PROXY_URL.includes("SEU-SUBDOMINIO")) return { ok: false };
+  try {
+    const r = await fetch(MAIL_PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tipo: tipo, dados: dados })
+    });
+    const d = await r.json().catch(() => ({}));
+    return { ok: r.ok, resp: d };
+  } catch (e) {
+    return { ok: false, erro: e && e.message ? e.message : "?" };
+  }
+}
+// Coleta e-mails dos gestores cadastrados (para notificacoes de gestao)
+function emailsGestores(dataObj) {
+  const us = (dataObj && dataObj.usuarios_empresa) || [];
+  const emails = us.filter(u => u && u.gestor && u.email && u.email.includes("@")).map(u => u.email.trim());
+  return Array.from(new Set(emails));
+}
 async function geminiCall(sys, msg, maxTok) {
   if (!IA_PROXY_URL || IA_PROXY_URL.includes("SEU-SUBDOMINIO")) return null;
   try {
@@ -873,6 +896,7 @@ async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
         nivel
       }];
     }
+    let _emailNovaOcorrencia = null;
     setData(prev => {
       const nd = {
         ...prev,
@@ -915,7 +939,19 @@ async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
         const idsExist = new Set((prev.denuncias || []).map(d => d.id));
         const descsExist = new Set((prev.denuncias || []).map(d => String(d.descricao || "").slice(0, 40)));
         const novas = novasDenuncias.filter(d => !idsExist.has(d.id) && !descsExist.has(String(d.descricao || "").slice(0, 40)));
-        if (novas.length) nd.denuncias = [...novas, ...(prev.denuncias || [])].slice(0, 100);
+        if (novas.length) {
+          nd.denuncias = [...novas, ...(prev.denuncias || [])].slice(0, 100);
+          // Captura dados para notificacao por e-mail (enviada apos o setData)
+          _emailNovaOcorrencia = {
+            para: emailsGestores(nd),
+            empresa: (nd.empresa && nd.empresa.nome) || "",
+            quantidade: novas.length,
+            categoria: novas[0] && novas[0].cat ? novas[0].cat : "Diversas",
+            area: novas[0] && novas[0].area ? novas[0].area : "N/I",
+            data: new Date().toLocaleDateString("pt-BR"),
+            url: "https://oriente-compliance.exploredev.workers.dev"
+          };
+        }
       }
       const acoesG = gerarAcoesDiagnostico(nd.areas || areas, dimensoes, nd.indiceHSP || indiceHSP);
       const plEx = prev.planos || [];
@@ -932,6 +968,10 @@ async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
       sd(nd);
       return nd;
     });
+    // Notificacao por e-mail: nova(s) ocorrencia(s) registrada(s)
+    if (_emailNovaOcorrencia && _emailNovaOcorrencia.para && _emailNovaOcorrencia.para.length) {
+      enviarEmail("nova_ocorrencia", _emailNovaOcorrencia);
+    }
   } catch (e) {
     const msg = e && e.message ? e.message : e ? String(e) : "erro de conexao";
     setErr("Erro ao gerar dashboard: " + msg + ". Configure o Google Apps Script em Configuracoes -> IA.");
