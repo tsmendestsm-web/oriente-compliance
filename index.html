@@ -919,6 +919,7 @@ async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
       }];
     }
     let _emailNovaOcorrencia = null;
+    let _snapshot = null;
     setData(prev => {
       const nd = {
         ...prev,
@@ -987,12 +988,42 @@ async function gerarDashboard(nomeEmpresa, setData, setLoad, setErr) {
         origem: "diagnostico"
       }));
       nd.planos = [...plEx, ...novasA];
+      // Retrato para o resumo semanal (gravado no Supabase apos o setData)
+      _snapshot = {
+        empresa: (nd.empresa && nd.empresa.nome) || "",
+        ocorrencias_abertas: (nd.denuncias || []).filter(d => d.status !== "concluida").length,
+        acoes_pendentes: (nd.planos || []).filter(p => p.status === "pendente").length,
+        indice_hsp: nd.indiceHSP || 0,
+        gestores_emails: emailsGestores(nd)
+      };
       sd(nd);
       return nd;
     });
     // Notificacao por e-mail: nova(s) ocorrencia(s) registrada(s)
     if (_emailNovaOcorrencia && _emailNovaOcorrencia.para && _emailNovaOcorrencia.para.length) {
       enviarEmail("nova_ocorrencia", _emailNovaOcorrencia);
+    }
+    // Grava retrato para o resumo semanal (upsert no Supabase) — nao bloqueia a UI
+    if (_snapshot && _snapshot.empresa) {
+      try {
+        fetch(SUPABASE_URL + "/rest/v1/resumo_semanal", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON,
+            "Authorization": "Bearer " + SUPABASE_ANON,
+            "Prefer": "resolution=merge-duplicates,return=minimal"
+          },
+          body: JSON.stringify({
+            empresa: _snapshot.empresa,
+            ocorrencias_abertas: _snapshot.ocorrencias_abertas,
+            acoes_pendentes: _snapshot.acoes_pendentes,
+            indice_hsp: _snapshot.indice_hsp,
+            gestores_emails: _snapshot.gestores_emails,
+            updated_at: new Date().toISOString()
+          })
+        }).catch(() => {});
+      } catch (e) {}
     }
   } catch (e) {
     const msg = e && e.message ? e.message : e ? String(e) : "erro de conexao";
@@ -4625,6 +4656,28 @@ function Relatorios({
       w.focus();
     }
   };
+  const [enviado, setEnviado] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const notificar = async titulo => {
+    const para = emailsGestores(data);
+    if (!para.length) {
+      setEnviado("Nenhum gestor com e-mail cadastrado em Config.");
+      setTimeout(() => setEnviado(""), 4000);
+      return;
+    }
+    setEnviando(true);
+    setEnviado("Enviando \"" + titulo + "\"...");
+    const res = await enviarEmail("relatorio", {
+      para: para,
+      titulo: titulo,
+      empresa: (data.empresa && data.empresa.nome) || "",
+      data: new Date().toLocaleDateString("pt-BR"),
+      url: "https://oriente-compliance.exploredev.workers.dev"
+    });
+    setEnviando(false);
+    setEnviado(res && res.ok ? ("\u2713 Enviado aos gestores: " + titulo) : ("Falha ao enviar. Tente novamente."));
+    setTimeout(() => setEnviado(""), 4000);
+  };
   const tipos = [{
     icon: "&#128203;",
     color: C.gold,
@@ -4675,7 +4728,22 @@ function Relatorios({
     }
   }, gerando && /*#__PURE__*/React.createElement(ModalGerandoPDF, {
     tipo: gerando
-  }), /*#__PURE__*/React.createElement("div", {
+  }), enviado && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      bottom: 24,
+      right: 24,
+      zIndex: 2000,
+      background: C.bgDeep,
+      border: "1px solid " + C.border,
+      borderRadius: 12,
+      padding: "12px 18px",
+      fontSize: 12,
+      color: C.text,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+      maxWidth: 320
+    }
+  }, enviado), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
     }
@@ -4771,7 +4839,21 @@ function Relatorios({
     },
     onClick: () => abrir(r.title, r.fn),
     disabled: gerando !== null
-  }, gerando === r.title ? "Gerando..." : "Gerar Relatorio")))));
+  }, gerando === r.title ? "Gerando..." : "Gerar Relatorio"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => notificar(r.title),
+    disabled: enviando,
+    style: {
+      width: "100%",
+      marginTop: 8,
+      padding: "8px",
+      borderRadius: 10,
+      border: "1px solid " + C.border,
+      background: "transparent",
+      color: C.textMute,
+      fontSize: 11,
+      cursor: enviando ? "not-allowed" : "pointer"
+    }
+  }, "\u2709 Enviar aos gestores")))));
 }
 function Suporte({
   usuario
@@ -4995,6 +5077,9 @@ function Config({
   const salvar = () => {
     localStorage.setItem("explore_ia_ctx", iaCtx);
     localStorage.setItem("explore_apps_script", appsUrl);
+    // Detecta usuarios recem-cadastrados (e-mail que ainda nao existia) para boas-vindas
+    const emailsAntigos = new Set(((data.usuarios_empresa) || []).map(u => String(u.email || "").trim().toLowerCase()).filter(Boolean));
+    const novosUsuarios = usuarios.filter(u => u.email && u.email.includes("@") && !emailsAntigos.has(String(u.email).trim().toLowerCase()));
     const up = {
       ...data,
       empresa: {
@@ -5008,6 +5093,17 @@ function Config({
     sd(up);
     setOk("Configuracoes salvas!");
     setTimeout(() => setOk(""), 3000);
+    // Notificacao por e-mail: boas-vindas aos usuarios recem-cadastrados
+    novosUsuarios.forEach(u => {
+      enviarEmail("boas_vindas", {
+        para: [String(u.email).trim()],
+        nome: u.nome || "",
+        empresa: emp.nome || "",
+        perfil: u.gestor ? "Gestor" : "Usuario",
+        email: String(u.email).trim(),
+        url: "https://oriente-compliance.exploredev.workers.dev"
+      });
+    });
     const comWA = usuarios.filter(u => u.contato && u.contato.replace(/[^0-9]/g, "").length >= 10);
     if (comWA.length > 0 && emp.nome) setTimeout(() => setModalWA(true), 800);
   };

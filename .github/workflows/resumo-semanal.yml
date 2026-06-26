@@ -1,0 +1,37 @@
+name: Resumo Semanal
+
+# Dispara o e-mail de resumo semanal aos gestores de cada empresa.
+# Aciona o Worker oriente-mail, que le os retratos no Supabase e envia via Resend.
+
+on:
+  schedule:
+    # Toda segunda-feira as 12:00 UTC (09:00 horario de Brasilia)
+    - cron: '0 12 * * 1'
+  # Permite acionar manualmente pela aba Actions
+  workflow_dispatch:
+
+jobs:
+  resumo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Acionar resumo semanal
+        run: |
+          echo "Acionando resumo semanal..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "${{ secrets.MAIL_WORKER_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tipo\":\"cron_resumo_semanal\",\"token\":\"${{ secrets.CRON_TOKEN }}\"}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "Status HTTP: $HTTP_CODE"
+          echo "Resposta: $BODY"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Resumo semanal acionado com sucesso."
+          else
+            echo "Falha ao acionar resumo (HTTP $HTTP_CODE)."
+            exit 1
+          fi
